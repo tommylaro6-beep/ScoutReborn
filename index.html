@@ -1,0 +1,1899 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VolleyScout - Video scouting pallavolo</title>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js"></script>
+<style>html,body{background:#020617;margin:0}
+@keyframes ledPulse{0%,100%{opacity:1}50%{opacity:.45}}
+.led-board{background:linear-gradient(180deg,#111827 0%,#05070b 55%,#0b0f19 100%);border:2px solid #334155;box-shadow:0 12px 30px rgba(0,0,0,.7),inset 0 1px 0 rgba(255,255,255,.08)}
+.led-red{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;color:#ff2a2a;text-shadow:0 0 8px rgba(255,42,42,.85),0 0 20px rgba(255,42,42,.45),0 0 34px rgba(220,38,38,.3);letter-spacing:.04em}
+.led-amber{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;color:#fbbf24;text-shadow:0 0 8px rgba(251,191,36,.85),0 0 18px rgba(245,158,11,.4)}
+.led-green{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;color:#34d399;text-shadow:0 0 8px rgba(52,211,153,.8),0 0 16px rgba(16,185,129,.35)}
+.led-dot-on{background:#fbbf24;box-shadow:0 0 8px #fbbf24,0 0 16px rgba(251,191,36,.7);animation:ledPulse 1.6s infinite}
+.led-set-pip-on{background:#ef4444;box-shadow:0 0 8px #ef4444}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+/* ================= CLOUD (Supabase) ================= */
+const SUPABASE_URL = "https://xqrhehvyqixlpaikzyol.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_kGAGC08Lq3vmvBr1OUmCXQ_pT76aLGm";
+const CLOUD_TABLE = "volley_sync";
+const CLOUD_ID = "phoenix_main";
+const supabaseClient = window.supabase && window.supabase.createClient
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
+  : null; /* null se la libreria non si carica (offline): l'app funziona comunque in locale */
+
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* Icone SVG inline (nessuna dipendenza esterna) */
+const svgProps = {
+  xmlns: "http://www.w3.org/2000/svg", width: 24, height: 24, viewBox: "0 0 24 24", fill: "none",
+  stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round",
+};
+const Play = ({ className }) => (
+  <svg {...svgProps} className={className}><polygon points="6 3 20 12 6 21 6 3"/></svg>
+);
+const Pause = ({ className }) => (
+  <svg {...svgProps} className={className}><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg>
+);
+const Rewind = ({ className }) => (
+  <svg {...svgProps} className={className}><polygon points="11 19 2 12 11 5 11 19"/><polygon points="22 19 13 12 22 5 22 19"/></svg>
+);
+const FastForward = ({ className }) => (
+  <svg {...svgProps} className={className}><polygon points="13 19 22 12 13 5 13 19"/><polygon points="2 19 11 12 2 5 2 19"/></svg>
+);
+const Trash2 = ({ className }) => (
+  <svg {...svgProps} className={className}><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+);
+const Download = ({ className }) => (
+  <svg {...svgProps} className={className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+);
+const Plus = ({ className }) => (
+  <svg {...svgProps} className={className}><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+);
+const Pencil = ({ className }) => (
+  <svg {...svgProps} className={className}><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+);
+const Check = ({ className }) => (
+  <svg {...svgProps} className={className}><path d="M20 6 9 17l-5-5"/></svg>
+);
+const Link2 = ({ className }) => (
+  <svg {...svgProps} className={className}><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" x2="16" y1="12" y2="12"/></svg>
+);
+const Film = ({ className }) => (
+  <svg {...svgProps} className={className}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/></svg>
+);
+const Users = ({ className }) => (
+  <svg {...svgProps} className={className}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+);
+const X = ({ className }) => (
+  <svg {...svgProps} className={className}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+);
+const Keyboard = ({ className }) => (
+  <svg {...svgProps} className={className}><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/><path d="M14 8h.01"/><path d="M18 8h.01"/><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/><path d="M7 16h10"/></svg>
+);
+
+
+const ROLES = ["Palleggiatore", "Schiacciatore", "Opposto", "Centrale", "Libero"];
+const SKILLS = ["Battuta", "Ricezione", "Alzata", "Attacco", "Muro", "Difesa"];
+const RESULTS = [
+  { key: "#", label: "Punto / Perfetta", cls: "bg-emerald-500 hover:bg-emerald-400 text-emerald-950" },
+  { key: "+", label: "Positiva", cls: "bg-sky-500 hover:bg-sky-400 text-sky-950" },
+  { key: "-", label: "Negativa", cls: "bg-amber-400 hover:bg-amber-300 text-amber-950" },
+  { key: "/", label: "Murato / Merito Avv.", cls: "bg-violet-500 hover:bg-violet-400 text-violet-950" },
+  { key: "=", label: "Errore", cls: "bg-rose-500 hover:bg-rose-400 text-rose-950" },
+];
+const RESULT_TEXT = {
+  "#": "text-emerald-400", "+": "text-sky-400", "-": "text-amber-400", "/": "text-violet-400", "=": "text-rose-400",
+};
+const SPEEDS = [0.75, 1, 1.25, 1.5];
+const LEAD_SECONDS = 3;
+
+const INITIAL_ROSTER = [
+  { id: 1, number: 1, name: "Marco Bianchi", role: "Palleggiatore" },
+  { id: 2, number: 4, name: "Luca Ferri", role: "Schiacciatore" },
+  { id: 3, number: 7, name: "Andrea Conti", role: "Schiacciatore" },
+  { id: 4, number: 9, name: "Davide Greco", role: "Opposto" },
+  { id: 5, number: 11, name: "Matteo Riva", role: "Centrale" },
+  { id: 6, number: 13, name: "Simone Costa", role: "Centrale" },
+  { id: 7, number: 15, name: "Paolo Serra", role: "Libero" },
+  { id: 8, number: 18, name: "Nicola Fontana", role: "Schiacciatore" },
+];
+
+/* Estrae l'ID video da qualsiasi formato di link YouTube (o da un ID nudo). */
+function extractVideoId(input) {
+  if (!input) return null;
+  const raw = input.trim();
+  if (/^[\w-]{11}$/.test(raw)) return raw;
+  let url;
+  try {
+    url = new URL(/^https?:\/\//i.test(raw) ? raw : "https://" + raw);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.replace(/^(www\.|m\.|music\.)/, "");
+  let id = null;
+  if (host === "youtu.be") {
+    id = url.pathname.split("/")[1];
+  } else if (host === "youtube.com" || host === "youtube-nocookie.com") {
+    if (url.pathname === "/watch") id = url.searchParams.get("v");
+    else {
+      const m = url.pathname.match(/^\/(embed|shorts|live|v|e)\/([\w-]{11})/);
+      if (m) id = m[2];
+    }
+  }
+  return id && /^[\w-]{11}$/.test(id) ? id : null;
+}
+
+const fmt = (s) => {
+  const t = Math.max(0, Math.floor(s || 0));
+  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+};
+
+/* ================= PERSISTENZA (localStorage) ================= */
+const STORE_KEY = "volleyscout_state_v1";
+
+function loadSaved() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return {};
+    const s = JSON.parse(raw);
+    return s && typeof s === "object" ? s : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+/* ================= LINK PAGELLA (Base64 URL-safe, UTF-8) ================= */
+function toBase64Url(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function fromBase64Url(b64) {
+  let s = b64.replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  const bin = atob(s);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+/* Il link contiene SOLO i dati del singolo giocatore. Mai la API key. */
+function buildReportLink(p, r, videoId) {
+  const payload = {
+    v: 1,
+    n: p.number,
+    nm: p.name,
+    r: p.role,
+    vt: r ? r.voto : null,
+    f: r ? r.forza : "",
+    c: r ? r.consiglio : "",
+    vid: videoId || "",
+    a: p.actions.map((a) => [a.time, SKILLS.indexOf(a.skill), a.result]),
+  };
+  const base =
+    window.location.protocol === "file:"
+      ? window.location.href.split("#")[0]
+      : window.location.origin + window.location.pathname;
+  return base + "#report=" + encodeURIComponent(toBase64Url(JSON.stringify(payload)));
+}
+
+/* Legge #report=... Restituisce null (nessun report), {error:true} (link rotto) o i dati. */
+function readReportHash() {
+  const h = window.location.hash || "";
+  if (!h.startsWith("#report=")) return null;
+  try {
+    const d = JSON.parse(fromBase64Url(decodeURIComponent(h.slice("#report=".length))));
+    if (!d || typeof d !== "object") return { error: true };
+    const actions = (Array.isArray(d.a) ? d.a : [])
+      .map((x, i) => ({ id: i, time: Math.max(0, Number(x[0]) || 0), skill: SKILLS[x[1]], result: x[2] }))
+      .filter((a) => a.skill && RESULT_TEXT[a.result])
+      .sort((a, b) => a.time - b.time);
+    const vt = parseFloat(d.vt);
+    return {
+      number: d.n,
+      name: String(d.nm || "Giocatore"),
+      role: String(d.r || ""),
+      voto: isNaN(vt) ? null : vt,
+      forza: String(d.f || ""),
+      consiglio: String(d.c || ""),
+      videoId: /^[\w-]{11}$/.test(d.vid || "") ? d.vid : null,
+      actions,
+    };
+  } catch (e) {
+    return { error: true };
+  }
+}
+
+/* ================= CAMPO, LIBERO, LINK SQUADRA ================= */
+const mkGame = (g) => ({ set: 1, setsWon: [0, 0], homeName: "PHOENIX", awayName: "OSPITI", lineup: [], rot: 1, serving: false, auto: true, libMan: null, ...(g || {}), homeName: (g && typeof g.homeName === "string" && g.homeName.trim()) ? g.homeName : "PHOENIX", awayName: (g && typeof g.awayName === "string" && g.awayName.trim()) ? g.awayName : "OSPITI", setsWon: Array.isArray(g && g.setsWon) && g.setsWon.length === 2 ? g.setsWon : [0, 0], libero: { id: null, partners: [], mode: "after", ...((g && g.libero) || {}) } });
+
+/* lineup[i] = giocatore in Zona i+1. Il Libero sostituisce i "partner" in seconda linea (Z1, Z5, Z6). */
+function effLineup(g) {
+  const base = g.lineup.length === 6 ? g.lineup.slice() : [null, null, null, null, null, null];
+  const L = g.libero || {};
+  const eff = base.slice();
+  let libIdx = -1;
+  if (L.id && !base.includes(L.id) && g.libMan !== "out") {
+    const ok = (i) => (L.partners || []).includes(base[i]) && !(i === 0 && g.serving && L.mode === "after");
+    const f = [5, 4, 0].find(ok);
+    libIdx = f === undefined ? -1 : f;
+    if (libIdx < 0 && g.libMan === "in") libIdx = 5;
+  }
+  if (libIdx >= 0) eff[libIdx] = L.id;
+  return { base, eff, libIdx };
+}
+
+function Court({ game, roster, selZone, swapFrom, onZone, onSwap, onBench }) {
+  const { base, eff, libIdx } = effLineup(game);
+  const [over, setOver] = useState(null);
+  const col = { 4: 0, 5: 0, 3: 1, 6: 1, 2: 2, 1: 2 };
+  const readDrag = (e) => { try { return JSON.parse(e.dataTransfer.getData("text/plain")); } catch (x) { return null; } };
+  return (
+    <div className="relative mx-auto w-full max-w-md select-none" style={{ aspectRatio: "360 / 350", containerType: "inline-size" }}>
+      <svg viewBox="0 0 360 350" className="absolute inset-0 h-full w-full" style={{ pointerEvents: "none" }} aria-hidden="true">
+        <rect x="22" y="44" width="316" height="296" rx="4" fill="#9a3412" fillOpacity="0.35" stroke="#f8fafc" strokeWidth="3" />
+        <rect x="22" y="44" width="316" height="100" fill="#ea580c" fillOpacity="0.22" />
+        <line x1="22" y1="144" x2="338" y2="144" stroke="#f8fafc" strokeWidth="2.5" strokeDasharray="8 6" />
+        <rect x="10" y="28" width="340" height="14" rx="3" fill="#e2e8f0" />
+        <text x="180" y="39" textAnchor="middle" fontSize="10" fontWeight="800" fill="#0f172a">RETE</text>
+        <text x="332" y="138" textAnchor="end" fontSize="9" fill="#f8fafc" fillOpacity="0.8">linea 3 m</text>
+      </svg>
+      {[4, 3, 2, 5, 6, 1].map((z) => {
+        const id = eff[z - 1], r = roster.find((x) => x.id === id), isLib = libIdx === z - 1;
+        const front = z >= 2 && z <= 4, x = 27 + col[z] * 106, y = front ? 54 : 192, h = front ? 84 : 92;
+        const tc = isLib ? "#0f172a" : "#f1f5f9", mc = isLib ? "#422006" : "#94a3b8";
+        const under = isLib ? roster.find((q) => q.id === base[z - 1]) : null;
+        const bc = over === z ? "#fb923c" : swapFrom === z ? "#38bdf8" : selZone === z ? "#fb923c" : isLib ? "#fde68a" : "#64748b";
+        const bw = over === z || swapFrom === z || selZone === z ? 4 : 2;
+        return (
+          <div
+            key={z}
+            draggable={!!r}
+            onDragStart={(e) => { e.dataTransfer.setData("text/plain", JSON.stringify({ t: "zone", z })); e.dataTransfer.effectAllowed = "move"; }}
+            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (over !== z) setOver(z); }}
+            onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOver(null); }}
+            onDragEnd={() => setOver(null)}
+            onDrop={(e) => { e.preventDefault(); setOver(null); const d = readDrag(e); if (!d) return; if (d.t === "zone") onSwap(d.z, z); else if (d.t === "bench") onBench(z, d.id); }}
+            onClick={() => onZone(z)}
+            style={{
+              position: "absolute", left: x / 3.6 + "%", top: y / 3.5 + "%", width: 96 / 3.6 + "%", height: h / 3.5 + "%",
+              borderRadius: "2.8cqw", cursor: r ? "grab" : "pointer", boxSizing: "border-box",
+              background: over === z ? "#7c2d12" : isLib ? "#fbbf24" : r ? "#1e293b" : "#0f172a",
+              border: bw + "px " + (r ? "solid" : "dashed") + " " + bc, boxShadow: over === z ? "0 0 0 3px rgba(251,146,60,.45)" : "none",
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", lineHeight: 1.05, color: tc,
+            }}
+          >
+            <span style={{ position: "absolute", left: "2cqw", top: "1.2cqw", fontSize: "3cqw", fontWeight: 700, color: mc }}>Z{z}</span>
+            <span style={{ position: "absolute", right: "2cqw", top: "1.6cqw", width: "2.6cqw", height: "2.6cqw", borderRadius: "50%", background: r ? "#22c55e" : "#475569" }} />
+            <span style={{ fontSize: "8.9cqw", fontWeight: 900 }}>{r ? r.number : "+"}</span>
+            <span style={{ fontSize: "3cqw", fontWeight: 700 }}>{r ? (r.name.length > 12 ? r.name.slice(0, 11) + "…" : r.name) : "assegna"}</span>
+            <span style={{ fontSize: "2.5cqw", color: mc }}>{r ? (isLib ? "LIBERO" + (under ? " per #" + under.number : "") : r.role) : ""}</span>
+            {z === 1 && game.serving && <span style={{ position: "absolute", left: "2cqw", bottom: "1.5cqw", fontSize: "4.4cqw" }}>🏐</span>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* Giocatori con azioni + quelli entrati in campo senza tag (es. Libero). rid = id roster. */
+function fullStats(roster, stats, kpi) {
+  const out = stats.map((p) => { const r = roster.find((x) => x.number === p.number && x.name === p.name); return { ...p, rid: r ? r.id : null }; });
+  roster.forEach((r) => {
+    const k = r.number + "|" + r.name;
+    if (!out.some((p) => p.key === k) && kpi.pl[k] && kpi.pl[k].n > 0) out.push({ key: k, number: r.number, name: r.name, role: r.role, rid: r.id, raw: {}, skills: [], actions: [], total: derive(emptyCounts()) });
+  });
+  return out.sort((a, b) => a.number - b.number);
+}
+
+function buildMatchLink(ps, reports, kpiFn, videoId) {
+  const payload = {
+    v: 2, vid: videoId || "",
+    p: ps.map((p) => {
+      const r = reports[p.key], k = kpiFn(p);
+      return { n: p.number, nm: p.name, r: p.role, vt: r ? r.voto : null, f: r ? r.forza : "", c: r ? r.consiglio : "", k: [k.n, k.tpi, k.net, k.ret, k.pps, k.res, k.qr, k.conv, k.setter ? 1 : 0], a: p.actions.map((a) => [a.time, SKILLS.indexOf(a.skill), a.result]) };
+    }),
+  };
+  const base = window.location.protocol === "file:" ? window.location.href.split("#")[0] : window.location.origin + window.location.pathname;
+  return base + "#match=" + encodeURIComponent(toBase64Url(JSON.stringify(payload)));
+}
+
+function readMatchHash() {
+  const h = window.location.hash || "";
+  if (!h.startsWith("#match=")) return null;
+  try {
+    const d = JSON.parse(fromBase64Url(decodeURIComponent(h.slice(7))));
+    if (!d || !Array.isArray(d.p)) return { error: true };
+    const vid = /^[\w-]{11}$/.test(d.vid || "") ? d.vid : null;
+    return {
+      players: d.p.map((x, i) => {
+        const vt = parseFloat(x.vt), k = Array.isArray(x.k) ? x.k : [];
+        return {
+          id: i, number: x.n, name: String(x.nm || "Giocatore"), role: String(x.r || ""), voto: isNaN(vt) ? null : vt,
+          forza: String(x.f || ""), consiglio: String(x.c || ""), videoId: vid,
+          kpi: k.length ? { n: k[0], tpi: k[1], net: k[2], ret: k[3], pps: k[4], res: k[5], qr: k[6], conv: k[7], setter: k[8] === 1 } : null,
+          actions: (Array.isArray(x.a) ? x.a : []).map((y, j) => ({ id: j, time: Math.max(0, Number(y[0]) || 0), skill: SKILLS[y[1]], result: y[2] })).filter((a) => a.skill && RESULT_TEXT[a.result]).sort((a, b) => a.time - b.time),
+        };
+      }),
+    };
+  } catch (e) { return { error: true }; }
+}
+
+const ME_KEY = "volleyscout_me_v1";
+function MatchView({ data }) {
+  const keyOf = (p) => p.number + "|" + p.name;
+  const [sel, setSel] = useState(() => { try { const i = data.players.findIndex((p) => keyOf(p) === localStorage.getItem(ME_KEY)); return i >= 0 ? i : null; } catch (e) { return null; } });
+  const pick = (i) => {
+    setSel(i);
+    try { if (i === null) localStorage.removeItem(ME_KEY); else localStorage.setItem(ME_KEY, keyOf(data.players[i])); } catch (e) {}
+    window.scrollTo(0, 0);
+  };
+  if (sel !== null && data.players[sel]) return <AthleteView key={sel} data={data.players[sel]} onSwitch={() => pick(null)} />;
+  return (
+    <div className="min-h-screen bg-slate-950 px-4 pb-10 pt-8 text-slate-100">
+      <div className="mx-auto max-w-2xl">
+        <p className="flex items-center gap-2 text-sm font-semibold text-orange-400"><Film className="h-4 w-4" /> VolleyScout · Pagelle di squadra</p>
+        <h1 className="mt-2 text-3xl font-extrabold">Chi sei in campo?</h1>
+        <p className="mt-1 text-slate-400">Tocca il tuo nome per aprire la tua pagella.</p>
+        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {data.players.map((p, i) => (
+            <button key={i} onClick={() => pick(i)} className="flex min-h-[112px] flex-col items-start rounded-2xl border border-slate-700 bg-slate-900 p-3 text-left hover:border-orange-400 active:scale-95">
+              <span className="text-4xl font-black text-orange-400">{p.number}</span>
+              <span className="mt-1 text-base font-bold leading-tight">{p.name}</span>
+              <span className="text-xs text-slate-400">{p.role}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function download(filename, content, type) {
+  const blob = new Blob([content], { type });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+const Copy = ({ className }) => (
+  <svg {...svgProps} className={className}><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+);
+const Sparkles = ({ className }) => (
+  <svg {...svgProps} className={className}><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 3v4"/><path d="M17 5h4"/><path d="M5 17v4"/><path d="M3 19h4"/></svg>
+);
+const MessageCircle = ({ className }) => (
+  <svg {...svgProps} className={className}><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>
+);
+const ClipboardList = ({ className }) => (
+  <svg {...svgProps} className={className}><rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></svg>
+);
+
+/* ================= STATISTICHE & REPORT ================= */
+const ROLE_FOCUS = {
+  Palleggiatore: "Qualità/Efficienza di Alzata (peso maggiore), Difesa, Battuta, Saldo ± e rendimento nelle rotazioni P1–P6 (NIENTE TPI, niente Muro)",
+  Schiacciatore: "Attacco (peso maggiore), Ricezione, Battuta, Difesa",
+  Opposto: "Attacco (peso maggiore), Battuta, Muro",
+  Centrale: "Attacco, Muro, Battuta (Ricezione e Difesa non contano)",
+  Libero: "SOLO Ricezione e Difesa (Attacco, Battuta, Muro e Alzata non contano)",
+};
+
+const emptyCounts = () => ({ "#": 0, "+": 0, "-": 0, "/": 0, "=": 0, tot: 0 });
+const isSetter = (role) => String(role || "").trim().toLowerCase() === "palleggiatore";
+const pct = (n, d) => (d ? Math.round((n / d) * 100) : null);
+const derive = (c) => ({ ...c, pos: pct(c["#"] + c["+"], c.tot), eff: pct(c["#"] - c["="] - 0.5 * c["/"], c.tot) });
+const pctTxt = (v) => (v === null ? "–" : v + "%");
+
+function computeStats(actions) {
+  const map = new Map();
+  actions.forEach((a) => {
+    const key = a.number + "|" + a.name;
+    if (!map.has(key)) map.set(key, { key, number: a.number, name: a.name, role: a.role, raw: {}, total: emptyCounts(), actions: [] });
+    const p = map.get(key);
+    p.role = a.role;
+    if (!p.raw[a.skill]) p.raw[a.skill] = emptyCounts();
+    [p.raw[a.skill], p.total].forEach((c) => { c[a.result] += 1; c.tot += 1; });
+    p.actions.push(a);
+  });
+  return Array.from(map.values())
+    .map((p) => ({
+      ...p,
+      skills: SKILLS.filter((s) => p.raw[s]).map((s) => ({ skill: s, ...derive(p.raw[s]) })),
+      total: derive(p.total),
+    }))
+    .sort((a, b) => a.number - b.number);
+}
+
+function computeKpi(rallies, actions) {
+  const rot = {};
+  for (let i = 1; i <= 6; i++) rot[i] = { n: 0, w: 0, l: 0, soN: 0, soW: 0, bpN: 0, bpW: 0 };
+  const pl = {};
+  const P = (k) => pl[k] || (pl[k] = { n: 0, net: 0, sets: new Set(), tN: 0, tW: 0, tS: 0, alN: 0, alW: 0 });
+  rallies.forEach((r) => {
+    const x = rot[r.rot] || rot[1];
+    x.n++; r.won ? x.w++ : x.l++;
+    if (r.serving) { x.bpN++; if (r.won) x.bpW++; } else { x.soN++; if (r.won) x.soW++; }
+    r.lineup.forEach((k) => { const p = P(k); p.n++; p.net += r.won ? 1 : -1; p.sets.add(r.set); });
+    const by = {};
+    actions.forEach((a) => {
+      if (a.rallyId !== r.id) return;
+      const o = by[a.number + "|" + a.name] || (by[a.number + "|" + a.name] = { e: false, m: false, al: false });
+      if (a.result === "=") o.e = true;
+      if (a.result === "/") o.m = true;
+      if (a.skill === "Alzata" && (a.result === "#" || a.result === "+")) o.al = true;
+    });
+    Object.keys(by).forEach((k) => {
+      const p = P(k), o = by[k];
+      p.tN++; if (r.won) p.tW++;
+      p.tS += r.won ? 1 : o.e ? -1 : o.m ? -0.5 : 0; /* scambio perso: = pesa -1, / pesa -0,5 */
+      if (o.al) { p.alN++; if (r.won) p.alW++; }
+    });
+  });
+  return { rot, pl };
+}
+function playerKpi(p, k) {
+  k = k || { n: 0, net: 0, sets: new Set(), tN: 0, tW: 0, tS: 0, alN: 0, alW: 0 };
+  const pts = p.actions.filter((a) => a.result === "#" && ["Attacco", "Battuta", "Muro"].includes(a.skill)).length;
+  /* Resilienza: si attiva dopo = o -; i "/" sono ignorati; recupero = azione successiva # o + */
+  const sorted = p.actions.filter((a) => a.result !== "/").sort((a, b) => a.time - b.time);
+  let errs = 0, ok = 0;
+  sorted.forEach((a, i) => { if ((a.result === "=" || a.result === "-") && sorted[i + 1]) { errs++; if (sorted[i + 1].result === "#" || sorted[i + 1].result === "+") ok++; } });
+  const setter = isSetter(p.role), al = (p.skills || []).find((s) => s.skill === "Alzata");
+  return {
+    n: k.n, setEq: (k.n / SET_EQ).toFixed(1), setter, tpi: setter ? null : pct(k.tS, k.tN), qr: al ? al.pos : null, conv: pct(k.alW, k.alN), net: k.net,
+    ret: pct(p.total.tot - p.total["="], p.total.tot),
+    pps: (pts / Math.max(1, k.sets.size)).toFixed(1), res: pct(ok, errs),
+  };
+}
+const kpiTxt = (v) => "Minutaggio " + v.n + " scambi, TPI " + pctTxt(v.tpi) + ", Saldo " + (v.net > 0 ? "+" : "") + v.net;
+
+function playerDataText(p) {
+  const parts = p.skills.map(
+    (s) => `${s.skill} ${s.tot} (#${s["#"]} +${s["+"]} -${s["-"]} =${s["="]}, pos ${pctTxt(s.pos)}, eff ${pctTxt(s.eff)})`
+  );
+  return `n.${p.number} ${p.name} | ${p.role} | tocchi ${p.total.tot} | ${parts.join("; ")}`;
+}
+
+/* Solo il riepilogo numerico aggregato per giocatore: mai l'elenco grezzo delle azioni. */
+function matchDataText(stats) {
+  const roles = Array.from(new Set(stats.map((p) => p.role)));
+  return [
+    "LEGENDA: # = punto/perfetta, + = positiva, - = negativa, = = errore. Pos = (# + +) / tot. Eff = (# - =) / tot.",
+    "FONDAMENTALI CHE CONTANO PER RUOLO:",
+    roles.map((r) => `- ${r}: ${ROLE_FOCUS[r] || "tutti"}`).join("\n"),
+    "",
+    "GIOCATORI:",
+    stats.map(playerDataText).join("\n"),
+  ].join("\n");
+}
+
+function buildPrompt(ps, rot, kpiFn, rallies) {
+  const L = [
+    "Sei un allenatore di pallavolo esperto. Ti passo i dati di scouting di una partita. Scrivi la pagella di OGNI giocatore elencato (Libero incluso).",
+    "",
+    "REGOLE:",
+    "- voto da 4.0 a 10.0 (un decimale), pesato sul ruolo: conta soprattutto il fondamentale principale. Con pochi tocchi (meno di 5) sii prudente: voti vicini al 6.",
+    "- forza: UNA frase (max 25 parole) sul punto di forza, basata sui numeri reali.",
+    "- consiglio: UNA frase pratica (max 25 parole) su cosa lavorare in allenamento.",
+    "- Non inventare dati assenti. Tono diretto e motivante, in italiano.",
+    "- I / (Murati / Merito Avversario) NON sono errori: NON penalizzare il voto per i / subiti. Penalizza solo gli errori diretti (=).",
+    "- Per il Palleggiatore il TPI non c'è (ridondante): valutalo ESCLUSIVAMENTE su Qualità/Efficienza di Alzata, Difesa, Battuta, Saldo ± e rendimento nelle rotazioni P1–P6.",
+    "",
+    "LEGENDA: # = punto/perfetta, + = positiva, - = negativa, / = murato o merito avversario (gesto avversario imprendibile, NON un errore), = = errore diretto. Pos = (# + +)/tot. Eff = (# - = - 0,5·/)/tot. TPI = indice sugli scambi in cui il giocatore tocca palla (vinto +1, perso con suo = -1, perso con suo / -0,5); NON è calcolato per il Palleggiatore. Qualità Regia = % alzate # e + sul totale alzate. Conversione Punti su Alzata = % scambi vinti dopo una sua alzata # o +. Net ± = scambi vinti meno persi con il giocatore in campo. Ball Retention = % tocchi senza errore. Punti/Set = # in attacco/battuta/muro per set. Resilienza = % azioni # o + subito dopo un = o un - (i / non contano).",
+    "FONDAMENTALI CHE CONTANO PER RUOLO:",
+  ];
+  Array.from(new Set(ps.map((p) => p.role))).forEach((r) => L.push("- " + r + ": " + (ROLE_FOCUS[r] || "tutti")));
+  L.push("", "RENDIMENTO PER ROTAZIONE:");
+  for (let n = 1; n <= 6; n++) {
+    const x = rot[n];
+    if (x && x.w + x.l > 0) L.push(`P${n}: ${x.w + x.l} scambi, ${x.w} vinti-${x.l} persi, saldo ${x.w - x.l > 0 ? "+" : ""}${x.w - x.l}, Side-Out ${pctTxt(pct(x.soW, x.soN))}, Break Point ${pctTxt(pct(x.bpW, x.bpN))}`);
+  }
+  L.push("", "GIOCATORI:");
+  ps.forEach((p) => {
+    const v = kpiFn(p);
+    L.push(`[ID ${p.rid != null ? p.rid : p.number}] n.${p.number} ${p.name} | ${p.role} | Minutaggio: ${v.n} scambi (~${v.setEq} set eq.)`);
+    L.push("  Statistiche: " + (p.skills.length ? p.skills.map((s) => `${s.skill} ${s.tot} (#${s["#"]} +${s["+"]} -${s["-"]} =${s["="]}, Pos ${pctTxt(s.pos)}, Eff ${pctTxt(s.eff)})`).join("; ") : "nessuna azione taggata"));
+    L.push(`  Murati / Merito Avversario (/): ${p.total["/"]} | Errori diretti (=): ${p.total["="]}  [i / NON penalizzano il voto]`);
+    const rest = `Net ± ${v.net > 0 ? "+" : ""}${v.net} | Ball Retention ${pctTxt(v.ret)} | Punti/Set ${v.pps} | Resilienza ${pctTxt(v.res)}`;
+    L.push("  KPI: " + (v.setter ? `Qualità Regia (# + +) ${pctTxt(v.qr)} | Conversione Punti su Alzata ${pctTxt(v.conv)} | ` : `TPI ${pctTxt(v.tpi)} | `) + rest);
+    if (v.setter) {
+      const rr = [];
+      for (let n = 1; n <= 6; n++) { const w = rallies.filter((r) => r.rot === n && r.lineup.includes(p.key)); if (w.length) { const s = w.filter((r) => r.won).length * 2 - w.length; rr.push(`P${n} ${s > 0 ? "+" : ""}${s} (${w.length} scambi)`); } }
+      L.push("  Saldo per rotazione con lui in campo: " + (rr.join("; ") || "n/d"));
+    }
+    const errs = p.actions.filter((a) => a.result === "=").sort((a, b) => a.time - b.time);
+    L.push("  Errori diretti (=) con rotazione e tempo: " + (errs.length ? errs.map((a) => { const rr = a.rot || (rallies.find((r) => r.id === a.rallyId) || {}).rot; return `${a.skill} (${rr ? "P" + rr : "P?"}, ${a.time > 0 ? fmt(a.time) : "live"})`; }).join("; ") : "nessuno"));
+  });
+  L.push("", 'Rispondi ESCLUSIVAMENTE con un JSON valido (nessun testo extra, nessun markdown), usando come chiave l\'ID indicato tra [ID ...]:', '{ "ID_GIOCATORE": { "voto": 7.5, "forza": "...", "consiglio": "..." } }');
+  return L.join("\n");
+}
+
+const ARCH_KEY = "volleyscout_archive_v1";
+const SET_EQ = 45; /* scambi medi per set */
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext !== false) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) {}
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) {}
+  ta.remove();
+  return ok;
+}
+
+const gradeColor = (v) =>
+  v >= 8 ? "bg-emerald-500 text-emerald-950" : v >= 6.5 ? "bg-sky-500 text-sky-950" : v >= 5.5 ? "bg-amber-400 text-amber-950" : "bg-rose-500 text-rose-950";
+
+function whatsappText(p, r, videoId) {
+  const L = [`*Pagella - ${p.name} (n. ${p.number})*`, `Ruolo: ${p.role}`];
+  if (r) {
+    L.push(`Voto: *${r.voto.toFixed(1)}*`, `✅ Punto di forza: ${r.forza}`, `🎯 Da migliorare: ${r.consiglio}`);
+  }
+  L.push("📊 Numeri della partita:");
+  p.skills.forEach((s) => L.push(`• ${s.skill}: ${s.tot} tocchi (# ${s["#"]}, + ${s["+"]}, - ${s["-"]}, / ${s["/"]}, = ${s["="]}) - Pos ${pctTxt(s.pos)}, Eff ${pctTxt(s.eff)}`));
+  if (videoId && p.actions.length) {
+    L.push("", "🎬 Rivedi le tue azioni:");
+    p.actions
+      .slice()
+      .sort((a, b) => a.time - b.time)
+      .forEach((a) => L.push(`• ${fmt(a.time)} ${a.skill} ${a.result} → https://youtu.be/${videoId}?t=${Math.floor(a.time)}`));
+  }
+  return L.join("\n");
+}
+
+function PlayerCard({ p, report, videoId, onClip, onCopy, onLink, onGen, busy, err, kpi }) {
+  const nFlag = p.actions.filter((a) => a.aiFlag).length;
+  return (
+    <article className="flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-900 p-4">
+      <header className="flex items-center gap-3">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-2xl font-extrabold">{p.number}</div>
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-lg font-bold leading-tight">{p.name}</h3>
+          <p className="text-sm text-slate-400">{p.role} · {p.total.tot} tocchi · ⭐ {nFlag}/6</p>
+        </div>
+        {report ? (
+          <div className={`rounded-xl px-3 py-2 text-3xl font-black leading-none ${gradeColor(report.voto)}`}>{report.voto.toFixed(1)}</div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-slate-600 px-3 py-2 text-sm text-slate-400">Voto</div>
+        )}
+      </header>
+
+      <div className="grid grid-cols-2 gap-2 text-center">
+        <div className="rounded-lg bg-slate-800 p-2"><div className="text-xl font-bold">{pctTxt(p.total.pos)}</div><div className="text-xs text-slate-400">Positività</div></div>
+        <div className="rounded-lg bg-slate-800 p-2"><div className="text-xl font-bold">{pctTxt(p.total.eff)}</div><div className="text-xs text-slate-400">Efficienza</div></div>
+      </div>
+
+      {kpi && <p className="text-center text-xs text-slate-400">{kpi.n} scambi · {kpi.setter ? `TPI N/A (Regia) · Qualità Regia ${pctTxt(kpi.qr)} · Conv. su Alzata ${pctTxt(kpi.conv)}` : `TPI ${pctTxt(kpi.tpi)}`} · Saldo {kpi.net > 0 ? "+" : ""}{kpi.net}</p>}
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="text-slate-400">
+            <tr className="text-right">
+              <th className="p-1 text-left">Fondam.</th><th className="p-1">Tot</th><th className="p-1">#</th><th className="p-1">+</th><th className="p-1">-</th><th className="p-1 text-violet-400">/</th><th className="p-1">=</th><th className="p-1">Pos</th><th className="p-1">Eff</th>
+            </tr>
+          </thead>
+          <tbody>
+            {p.skills.map((s) => (
+              <tr key={s.skill} className="border-t border-slate-800 text-right tabular-nums">
+                <td className="p-1 text-left font-semibold">{s.skill}</td>
+                <td className="p-1">{s.tot}</td>
+                <td className="p-1 text-emerald-400">{s["#"]}</td>
+                <td className="p-1 text-sky-400">{s["+"]}</td>
+                <td className="p-1 text-amber-400">{s["-"]}</td>
+                <td className="p-1 text-violet-400">{s["/"]}</td>
+                <td className="p-1 text-rose-400">{s["="]}</td>
+                <td className="p-1">{pctTxt(s.pos)}</td>
+                <td className="p-1">{pctTxt(s.eff)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {report && (
+        <div className="space-y-2 text-sm">
+          <p><span className="font-bold text-emerald-400">Punto di forza. </span>{report.forza}</p>
+          <p><span className="font-bold text-orange-300">Consiglio tecnico. </span>{report.consiglio}</p>
+          {report.clips > 0 && <p className="text-xs text-slate-500">🎬 Voto basato anche sull'analisi video di {report.clips} clip.</p>}
+        </div>
+      )}
+
+      {videoId && (
+        <div>
+          <h4 className="mb-1 text-xs font-semibold text-slate-400">Rivedi le clip</h4>
+          <div className="flex max-h-24 flex-wrap gap-1 overflow-y-auto">
+            {p.actions.map((a) => (
+              <button key={a.id} onClick={() => onClip(a.time)} className="flex items-center gap-1 rounded-md bg-slate-800 px-2 py-1 text-xs hover:bg-slate-700">
+                <Play className="h-3 w-3" />
+                <span className="font-mono">{fmt(a.time)}</span> {a.skill}
+                <b className={RESULT_TEXT[a.result]}>{a.result}</b>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="mt-auto flex flex-col gap-2">
+        <button onClick={onLink} className="flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-3 font-semibold text-white hover:bg-sky-500">
+          <Link2 className="h-5 w-5" /> Copia Link Pagella Interattiva
+        </button>
+        <button onClick={onCopy} className="flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-500">
+          <MessageCircle className="h-5 w-5" /> Copia per WhatsApp
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function VolleyScout() {
+  const saved = useRef(null);
+  if (saved.current === null) saved.current = loadSaved();
+  const S = saved.current;
+
+  const [urlInput, setUrlInput] = useState(() => (typeof S.urlInput === "string" ? S.urlInput : ""));
+  const [videoId, setVideoId] = useState(() => (typeof S.videoId === "string" && /^[\w-]{11}$/.test(S.videoId) ? S.videoId : null));
+  const [urlError, setUrlError] = useState("");
+  const [apiReady, setApiReady] = useState(false);
+  const [playerReady, setPlayerReady] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [now, setNow] = useState(0);
+  const [speed, setSpeed] = useState(1);
+
+  const [roster, setRoster] = useState(() => (Array.isArray(S.roster) && S.roster.length ? S.roster : INITIAL_ROSTER));
+  const [editRoster, setEditRoster] = useState(false);
+  const [newP, setNewP] = useState({ number: "", name: "", role: ROLES[1] });
+
+  const [selPlayer, setSelPlayer] = useState(null);
+  const [selSkill, setSelSkill] = useState(null);
+  const [actions, setActions] = useState(() => (Array.isArray(S.actions) ? S.actions : []));
+  const [flash, setFlash] = useState("");
+
+  const hostRef = useRef(null);
+  const playerRef = useRef(null);
+  const nextId = useRef(
+    Math.max(
+      100,
+      ...((Array.isArray(S.roster) ? S.roster : []).map((x) => Number(x.id) || 0)),
+      ...((Array.isArray(S.actions) ? S.actions : []).map((x) => Number(x.id) || 0))
+    ) + 1
+  );
+
+  const [reports, setReports] = useState(() => (S.reports && typeof S.reports === "object" ? S.reports : {}));
+  const [reportCount, setReportCount] = useState(() => Number(S.reportCount) || 0);
+  const [toast, setToast] = useState("");
+  const [tab, setTab] = useState("scout");
+  const [flagNext, setFlagNext] = useState(false);
+  const [game, setGame] = useState(() => mkGame(S.game));
+  const [selZone, setSelZone] = useState(null);
+  const [swapFrom, setSwapFrom] = useState(null);
+  const [pasteText, setPasteText] = useState("");
+  const [pasteMsg, setPasteMsg] = useState(null);
+  const [cloud, setCloud] = useState({ type: "", text: "" });
+  const [rallies, setRallies] = useState(() => (Array.isArray(S.rallies) ? S.rallies : []));
+  const [subOut, setSubOut] = useState("");
+  const [subIn, setSubIn] = useState("");
+  const [archive, setArchive] = useState(() => { try { const c = JSON.parse(localStorage.getItem(ARCH_KEY) || "[]"); return Array.isArray(c) ? c : []; } catch (e) { return []; } });
+  useEffect(() => { try { localStorage.setItem(ARCH_KEY, JSON.stringify(archive)); } catch (e) {} }, [archive]);
+
+  /* --- Salvataggio automatico (video, roster, azioni, report) --- */
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({ urlInput, videoId, roster, actions, reports, reportCount, game, rallies }));
+    } catch (e) {}
+  }, [urlInput, videoId, roster, actions, reports, reportCount, game, rallies]);
+
+  /* --- Caricamento YouTube IFrame API --- */
+  useEffect(() => {
+    if (window.YT && window.YT.Player) {
+      setApiReady(true);
+      return;
+    }
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      if (prev) prev();
+      setApiReady(true);
+    };
+    if (!document.getElementById("yt-iframe-api")) {
+      const s = document.createElement("script");
+      s.id = "yt-iframe-api";
+      s.src = "https://www.youtube.com/iframe_api";
+      document.head.appendChild(s);
+    }
+  }, []);
+
+  /* --- Creazione / aggiornamento del player --- */
+  useEffect(() => {
+    if (!apiReady || !videoId) return;
+    if (playerRef.current && playerRef.current.loadVideoById) {
+      playerRef.current.loadVideoById(videoId);
+      return;
+    }
+    const mount = document.createElement("div");
+    hostRef.current.innerHTML = "";
+    hostRef.current.appendChild(mount);
+    playerRef.current = new window.YT.Player(mount, {
+      videoId,
+      width: "100%",
+      height: "100%",
+      playerVars: { playsinline: 1, rel: 0, modestbranding: 1, controls: 1 },
+      events: {
+        onReady: () => setPlayerReady(true),
+        onStateChange: (e) => setPlaying(e.data === window.YT.PlayerState.PLAYING),
+        onError: () =>
+          setUrlError("Il video non è disponibile o non può essere incorporato. Prova con un altro link."),
+      },
+    });
+  }, [apiReady, videoId]);
+
+  useEffect(() => () => {
+    try { playerRef.current && playerRef.current.destroy(); } catch {}
+  }, []);
+
+  /* --- Aggiornamento tempo corrente --- */
+  useEffect(() => {
+    if (!playerReady) return;
+    const t = setInterval(() => {
+      try { setNow(playerRef.current.getCurrentTime() || 0); } catch {}
+    }, 250);
+    return () => clearInterval(t);
+  }, [playerReady]);
+
+  const loadVideo = (e) => {
+    e && e.preventDefault();
+    const id = extractVideoId(urlInput);
+    if (!id) {
+      setUrlError("Link non riconosciuto. Incolla un URL tipo youtube.com/watch?v=… o youtu.be/…");
+      return;
+    }
+    setUrlError("");
+    setVideoId(id);
+  };
+
+  /* --- Controlli player --- */
+  const togglePlay = useCallback(() => {
+    const p = playerRef.current;
+    if (!p || !p.getPlayerState) return;
+    p.getPlayerState() === window.YT.PlayerState.PLAYING ? p.pauseVideo() : p.playVideo();
+  }, []);
+
+  const skip = useCallback((delta) => {
+    const p = playerRef.current;
+    if (!p || !p.getCurrentTime) return;
+    p.seekTo(Math.max(0, p.getCurrentTime() + delta), true);
+  }, []);
+
+  const changeSpeed = (r) => {
+    setSpeed(r);
+    try { playerRef.current.setPlaybackRate(r); } catch {}
+  };
+
+  const jumpTo = (t) => {
+    const p = playerRef.current;
+    if (!p || !p.seekTo) return;
+    p.seekTo(t, true);
+    p.playVideo();
+  };
+
+  /* --- Scorciatoie da tastiera --- */
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = (e.target.tagName || "").toLowerCase();
+      if (["input", "select", "textarea"].includes(tag)) return;
+      if (e.code === "Space") { e.preventDefault(); togglePlay(); }
+      else if (e.key === "ArrowLeft") { e.preventDefault(); skip(-3); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); skip(3); }
+      else if (e.key === "s" || e.key === "S") { setFlagNext((v) => !v); }
+      else if (e.key === "Escape") { setSelPlayer(null); setSelSkill(null); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [togglePlay, skip]);
+
+  /* --- Tagging --- */
+  const commitTag = (result) => {
+    if (!selPlayer || !selSkill) return;
+    const p = playerRef.current;
+    let t = 0;
+    try { t = p && p.getCurrentTime ? p.getCurrentTime() : 0; } catch {}
+    const time = Math.max(0, Math.floor(t - LEAD_SECONDS));
+    const player = roster.find((r) => r.id === selPlayer);
+    if (!player) return;
+    setActions((a) => [
+      ...a,
+      {
+        id: nextId.current++,
+        time,
+        number: player.number,
+        name: player.name,
+        role: player.role,
+        skill: selSkill,
+        result,
+        aiFlag: flagNext,
+        set: game.set,
+        rot: game.rot,
+        rallyId: null,
+      },
+    ]);
+    setFlash(`#${player.number} ${selSkill} ${result} @ ${fmt(time)}`);
+    setTimeout(() => setFlash(""), 1800);
+    setSelSkill(null);
+    setFlagNext(false);
+  };
+  const toggleFlag = (id) => setActions((as) => as.map((a) => (a.id === id ? { ...a, aiFlag: !a.aiFlag } : a)));
+
+  const deleteAction = (id) => setActions((a) => a.filter((x) => x.id !== id));
+
+  /* --- Roster --- */
+  const addPlayer = (e) => {
+    e.preventDefault();
+    if (newP.number === "" || !newP.name.trim()) return;
+    setRoster((r) => [...r, { id: nextId.current++, number: Number(newP.number), name: newP.name.trim(), role: newP.role }]);
+    setNewP({ number: "", name: "", role: newP.role });
+  };
+  const updatePlayer = (id, patch) =>
+    setRoster((r) => r.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  const removePlayer = (id) => {
+    setRoster((r) => r.filter((p) => p.id !== id));
+    if (selPlayer === id) setSelPlayer(null);
+  };
+
+  /* --- Export --- */
+  const exportJSON = () =>
+    download(
+      "scouting-partita.json",
+      JSON.stringify({ videoId, exportedAt: new Date().toISOString(), actions: actions.map((a) => ({ ...a, timestamp: fmt(a.time) })) }, null, 2),
+      "application/json"
+    );
+  const exportCSV = () => {
+    const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
+    const rows = [["Timestamp", "Secondi", "Maglia", "Giocatore", "Ruolo", "Fondamentale", "Esito"]]
+      .concat(actions.map((a) => [fmt(a.time), a.time, a.number, a.name, a.role, a.skill, a.result]));
+    download("scouting-partita.csv", "\ufeff" + rows.map((r) => r.map(esc).join(";")).join("\n"), "text/csv;charset=utf-8");
+  };
+
+  const stats = computeStats(actions);
+
+  const showToast = (msg, ms = 2200) => { setToast(msg); setTimeout(() => setToast(""), ms); };
+
+  const copyWithToast = async (text, okMsg, ms) => {
+    const ok = await copyText(text);
+    showToast(ok ? okMsg : "Copia non riuscita: seleziona e copia manualmente.", ok ? ms : 2200);
+  };
+  const copyPlayerLink = (p) => {
+    const link = buildReportLink(p, reports[p.key], videoId);
+    if (window.location.protocol === "file:") {
+      copyWithToast(link, "Link copiato, ma questo file è locale: pubblica index.html online perché i giocatori possano aprirlo.", 5000);
+    } else {
+      copyWithToast(link, `Link pagella di ${p.name} copiato.`);
+    }
+  };
+  /* Cancella solo la partita corrente: restano roster, URL video e API key. */
+  const resetMatch = () => {
+    if (!window.confirm("Vuoi davvero azzerare la partita?\n\nVerranno cancellate tutte le azioni taggate, i set vinti, gli scambi e le pagelle.\nRoster e link video restano salvati.")) return;
+    setActions([]); setReports({}); setReportCount(0); setRallies([]);
+    setGame((g) => ({ ...g, set: 1, setsWon: [0, 0] }));
+    setSelPlayer(null); setSelSkill(null); setFlash(""); setPasteMsg(null);
+    showToast("Partita azzerata.");
+  };
+  const kpiData = computeKpi(rallies, actions);
+  const kpiRow = (p) => playerKpi(p, kpiData.pl[p.key]);
+  const ps = fullStats(roster, stats, kpiData);
+
+  /* --- Zero-API: copia dati+prompt -> incolla JSON di Claude --- */
+  const copyForChatAI = () => copyWithToast(buildPrompt(ps, kpiData.rot, kpiRow, rallies), "Dati e prompt copiati: incollali su Claude e riporta qui il JSON.", 3500);
+  const applyReports = () => {
+    try {
+      const clean = pasteText.replace(/```json|```/gi, "").trim();
+      let obj;
+      try { obj = JSON.parse(clean); } catch (e) { const m = clean.match(/[\[{][\s\S]*[\]}]/); obj = JSON.parse(m ? m[0] : ""); }
+      const entries = Array.isArray(obj) ? obj.map((o) => [o && (o.id != null ? o.id : o.numero != null ? o.numero : o.nome), o]) : Object.entries(obj);
+      const next = {};
+      let ok = 0;
+      entries.forEach(([k, o]) => {
+        if (!o || typeof o !== "object") return;
+        const ks = String(k).trim();
+        const r = roster.find((x) => String(x.id) === ks) || roster.find((x) => x.name.toLowerCase() === ks.toLowerCase()) || roster.find((x) => String(x.number) === ks.replace(/\D/g, ""));
+        const v = parseFloat(String(o.voto).replace(",", "."));
+        if (!r || isNaN(v)) return;
+        next[r.number + "|" + r.name] = { voto: Math.round(Math.min(10, Math.max(1, v)) * 10) / 10, forza: String(o.forza || ""), consiglio: String(o.consiglio || ""), clips: 0 };
+        ok++;
+      });
+      if (!ok) throw new Error("nessun giocatore riconosciuto");
+      setReports((prev) => ({ ...prev, ...next }));
+      setReportCount(actions.length);
+      setPasteText("");
+      setPasteMsg({ type: "ok", text: ok + " pagelle applicate e salvate." });
+    } catch (e) {
+      setPasteMsg({ type: "err", text: "JSON non valido: " + (e.message || "controlla la risposta di Claude") });
+    }
+  };
+  const copyMatchLink = () => {
+    const link = buildMatchLink(ps, reports, kpiRow, videoId);
+    if (window.location.protocol === "file:") copyWithToast(link, "Link copiato, ma questo file è locale: pubblica index.html online perché la squadra possa aprirlo.", 5000);
+    else copyWithToast(link, "Link partita per la squadra copiato.");
+  };
+
+  /* --- Esporta / importa partita (telefono <-> PC) --- */
+  const exportMatch = () => download("partita-volleyscout.json", JSON.stringify({ app: "VolleyScout", type: "match", version: 3, exportedAt: new Date().toISOString(), data: snapshot() }, null, 2), "application/json");
+  /* --- Cloud Supabase: salva / carica l'intero stato (partita, roster, formazione, pagelle, archivio) --- */
+  const hhmm = (d) => new Date(d).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+  const cloudErr = (e) => {
+    const m = String((e && e.message) || e || "");
+    if (/failed to fetch|network|load failed/i.test(m)) return "Nessuna connessione: i dati restano salvati in locale.";
+    if (e && (e.code === "42501" || /row-level security|permission denied/i.test(m))) return "Supabase ha negato l'accesso (controlla le policy RLS di volley_sync).";
+    if (e && (e.code === "42P01" || /does not exist|schema cache/i.test(m))) return "Tabella volley_sync non trovata su Supabase.";
+    return "Errore cloud: " + m.slice(0, 120);
+  };
+  const saveCloud = async () => {
+    if (!supabaseClient) { setCloud({ type: "err", text: "Libreria Cloud non caricata: serve connessione." }); return; }
+    setCloud({ type: "busy", text: "Salvataggio in corso…" });
+    try {
+      const now = new Date().toISOString();
+      const { error } = await supabaseClient.from(CLOUD_TABLE).upsert({ id: CLOUD_ID, data: { app: "VolleyScout", version: 4, savedAt: now, current: snapshot(), archive }, updated_at: now });
+      if (error) throw error;
+      setCloud({ type: "ok", text: "Salvato alle " + hhmm(now) });
+    } catch (e) { setCloud({ type: "err", text: cloudErr(e) }); }
+  };
+  const loadCloud = async () => {
+    if (!supabaseClient) { setCloud({ type: "err", text: "Libreria Cloud non caricata: serve connessione." }); return; }
+    setCloud({ type: "busy", text: "Caricamento in corso…" });
+    try {
+      const { data: row, error } = await supabaseClient.from(CLOUD_TABLE).select("data, updated_at").eq("id", CLOUD_ID).maybeSingle();
+      if (error) throw error;
+      if (!row || !row.data || !row.data.current) { setCloud({ type: "err", text: "Nessun salvataggio trovato sul cloud." }); return; }
+      const when = new Date(row.updated_at || row.data.savedAt || Date.now());
+      if ((actions.length || rallies.length) && !window.confirm("Caricare il salvataggio cloud del " + when.toLocaleString("it-IT") + "?\n\nLa partita, il roster e le pagelle su questo dispositivo verranno sovrascritti (l'archivio viene sostituito con quello cloud).")) { setCloud({ type: "", text: "" }); return; }
+      const d = row.data.current;
+      const rs = d.roster && d.roster.length ? d.roster : roster;
+      const n = { urlInput: d.urlInput || "", videoId: d.videoId || null, roster: rs, actions: d.actions || [], reports: d.reports || {}, reportCount: d.reportCount || 0, game: mkGame(d.game), rallies: d.rallies || [] };
+      const arch = Array.isArray(row.data.archive) ? row.data.archive : archive;
+      try { localStorage.setItem(STORE_KEY, JSON.stringify(n)); localStorage.setItem(ARCH_KEY, JSON.stringify(arch)); } catch (e) {}
+      setUrlInput(n.urlInput); setVideoId(n.videoId); setRoster(n.roster); setActions(n.actions); setReports(n.reports);
+      setReportCount(n.reportCount); setGame(n.game); setRallies(n.rallies); setArchive(arch);
+      setSelPlayer(null); setSelSkill(null); setSelZone(null);
+      nextId.current = Math.max(nextId.current, ...n.actions.map((x) => Number(x.id) || 0), ...n.rallies.map((x) => Number(x.id) || 0), ...rs.map((x) => Number(x.id) || 0)) + 1;
+      setCloud({ type: "ok", text: "Caricato il salvataggio cloud del " + when.toLocaleDateString("it-IT") + " alle " + hhmm(when) });
+    } catch (e) { setCloud({ type: "err", text: cloudErr(e) }); }
+  };
+  const importMatch = (file) => {
+    if (!file) return;
+    const fr = new FileReader();
+    fr.onload = () => {
+      try {
+        const j = JSON.parse(fr.result);
+        const d = j.data || j.current || j;
+        if (!d || !Array.isArray(d.actions)) throw new Error("formato");
+        if (actions.length && !window.confirm("Importare la partita? Quella corrente verrà sostituita (salvala prima in archivio se serve).")) return;
+        const rs = d.roster && d.roster.length ? d.roster : roster;
+        setUrlInput(d.urlInput || ""); setVideoId(d.videoId || null); setRoster(rs);
+        setActions(d.actions); setReports(d.reports || {}); setReportCount(d.reportCount || 0);
+        setGame(mkGame(d.game)); setRallies(d.rallies || []);
+        nextId.current = Math.max(nextId.current, ...d.actions.map((x) => Number(x.id) || 0), ...(d.rallies || []).map((x) => Number(x.id) || 0), ...rs.map((x) => Number(x.id) || 0)) + 1;
+        setTab("scout");
+        showToast("Partita importata: ora puoi aggiungere il link YouTube.", 3500);
+      } catch (e) { showToast("File partita non valido."); }
+    };
+    fr.readAsText(file);
+  };
+
+  /* --- Set, rotazioni, sostituzioni, chiusura scambio --- */
+  const setLineupAt = (i, id) => setGame((g) => { const l = (g.lineup.length === 6 ? g.lineup : [null, null, null, null, null, null]).slice(); l[i] = id ? Number(id) : null; return { ...g, lineup: l }; });
+  const rotateOnce = (g) => ({ ...g, rot: (g.rot % 6) + 1, libMan: null, lineup: g.lineup.length === 6 ? g.lineup.map((_, i, a) => a[(i + 1) % 6]) : g.lineup });
+  const rotateBack = (g) => ({ ...g, rot: ((g.rot + 4) % 6) + 1, libMan: null, lineup: g.lineup.length === 6 ? g.lineup.map((_, i, a) => a[(i + 5) % 6]) : g.lineup });
+  const swapZones = (a, b) => {
+    setSwapFrom(null); setSelZone(null);
+    if (a === b) return;
+    setGame((g) => { const l = (g.lineup.length === 6 ? g.lineup : [null, null, null, null, null, null]).slice(); const t = l[a - 1]; l[a - 1] = l[b - 1]; l[b - 1] = t; return { ...g, lineup: l }; });
+    showToast("Zone " + a + " e " + b + " scambiate.");
+  };
+  const benchToZone = (z, id) => { setLineupAt(z - 1, id); setSelZone(null); setSwapFrom(null); showToast("Sostituzione effettuata."); };
+  const onZoneTap = (z) => { if (swapFrom) { swapZones(swapFrom, z); return; } setSelZone(selZone === z ? null : z); };
+  const doSubZone = (z, id) => { setLineupAt(z - 1, id); setSelZone(null); showToast(id ? "Sostituzione effettuata." : "Posizione svuotata."); };
+  const setLibero = (patch) => setGame((g) => ({ ...g, libero: { ...g.libero, ...patch } }));
+  const togglePartner = (id) => setGame((g) => ({ ...g, libero: { ...g.libero, partners: g.libero.partners.includes(id) ? g.libero.partners.filter((x) => x !== id) : [...g.libero.partners, id] } }));
+  const liberoToggle = () => setGame((g) => ({ ...g, libMan: effLineup(g).libIdx >= 0 ? "out" : "in" }));
+  const closeRally = (won) => {
+    const { eff } = effLineup(game);
+    if (eff.filter(Boolean).length < 6) { showToast("Imposta prima i 6 giocatori in campo (tocca le zone)."); return; }
+    const id = nextId.current++;
+    const keys = eff.map((i) => roster.find((x) => x.id === i)).filter(Boolean).map((r) => r.number + "|" + r.name);
+    setRallies((rs) => [...rs, { id, set: game.set, rot: game.rot, serving: game.serving, won, lineup: keys, rotated: won && !game.serving && game.auto }]);
+    setActions((as) => as.map((a) => (a.rallyId == null ? { ...a, rallyId: id } : a)));
+    setGame((g) => { const n = { ...g, serving: won }; return won && !g.serving && g.auto ? rotateOnce(n) : n; });
+    showToast(won ? "Punto Noi registrato." : "Punto Avversari registrato.");
+  };
+  const undoRally = () => {
+    const last = rallies[rallies.length - 1];
+    if (!last) return;
+    setRallies((rs) => rs.slice(0, -1));
+    setActions((as) => as.map((a) => (a.rallyId === last.id ? { ...a, rallyId: null } : a)));
+    /* ripristina battuta e, se il punto aveva fatto ruotare, la rotazione esatta di prima */
+    setGame((g) => ({ ...(last.rotated ? rotateBack(g) : g), serving: last.serving, set: last.set || g.set }));
+    showToast("Ultimo punto annullato" + (last.rotated ? " e rotazione ripristinata." : "."));
+  };
+  const setRalliesCur = rallies.filter((r) => (r.set || 1) === game.set);
+  const ptsNoi = setRalliesCur.filter((r) => r.won).length;
+  const ptsAvv = setRalliesCur.filter((r) => !r.won).length;
+  const closeSet = () => {
+    if (ptsNoi === 0 && ptsAvv === 0) { showToast("Segna almeno un punto prima di chiudere il set."); return; }
+    if (ptsNoi === ptsAvv) { showToast("Il set è in parità (" + ptsNoi + "-" + ptsAvv + "): assegna prima il punto decisivo."); return; }
+    const weWon = ptsNoi > ptsAvv;
+    if (!window.confirm(`Chiudere il Set ${game.set} sul punteggio ${ptsNoi} - ${ptsAvv} (${weWon ? "vinto da " + game.homeName : "vinto da " + game.awayName}) e passare al Set ${Math.min(5, game.set + 1)}?`)) return;
+    setGame((g) => {
+      const sw = [Number(g.setsWon[0]) || 0, Number(g.setsWon[1]) || 0];
+      if (weWon) sw[0] = Math.min(3, sw[0] + 1);
+      else sw[1] = Math.min(3, sw[1] + 1);
+      return { ...g, setsWon: sw, set: Math.min(5, g.set + 1) };
+    });
+    showToast(`Set ${game.set} chiuso (${ptsNoi}-${ptsAvv})! Passato al Set ${Math.min(5, game.set + 1)}.`, 3000);
+  };
+  const adjustSetsWon = (idx, delta) => {
+    setGame((g) => {
+      const sw = [Number(g.setsWon[0]) || 0, Number(g.setsWon[1]) || 0];
+      sw[idx] = Math.max(0, Math.min(3, sw[idx] + delta));
+      return { ...g, setsWon: sw };
+    });
+  };
+  const editTeamName = (side) => {
+    const isHome = side === "home";
+    const cur = isHome ? game.homeName : game.awayName;
+    const val = window.prompt(isHome ? "Nome squadra di casa (Noi):" : "Nome squadra ospite (Avversari):", cur);
+    if (val === null) return;
+    const clean = val.trim().toUpperCase().slice(0, 18);
+    if (!clean) return;
+    setGame((g) => (isHome ? { ...g, homeName: clean } : { ...g, awayName: clean }));
+    showToast("Nome squadra aggiornato: " + clean);
+  };
+
+  /* --- Archivio stagione --- */
+  const snapshot = () => ({ urlInput, videoId, roster, actions, reports, reportCount, game, rallies });
+  const saveArchive = () => {
+    const name = window.prompt("Nome partita (es. vs Pinerolo 24/11):", "Partita " + new Date().toLocaleDateString("it-IT"));
+    if (!name) return;
+    setArchive((a) => [...a, { id: Date.now(), name, date: new Date().toISOString(), data: snapshot() }]);
+    showToast("Partita salvata in archivio.");
+  };
+  const loadArchive = (it) => {
+    if (!window.confirm("Caricare \"" + it.name + "\"? La partita corrente verrà sostituita (salvala prima in archivio se serve).")) return;
+    const d = it.data || {};
+    setUrlInput(d.urlInput || ""); setVideoId(d.videoId || null); setRoster(d.roster && d.roster.length ? d.roster : roster);
+    setActions(d.actions || []); setReports(d.reports || {}); setReportCount(d.reportCount || 0);
+    setGame(mkGame(d.game)); setRallies(d.rallies || []);
+    setTab("scout"); showToast("Partita caricata.");
+  };
+  const exportBackup = () => download("volleyscout-backup.json", JSON.stringify({ app: "VolleyScout", version: 2, exportedAt: new Date().toISOString(), archive, current: snapshot() }, null, 2), "application/json");
+  const importBackup = (file) => {
+    if (!file) return;
+    const fr = new FileReader();
+    fr.onload = () => {
+      try {
+        const d = JSON.parse(fr.result);
+        const list = Array.isArray(d.archive) ? d.archive : [];
+        if (d.current && d.current.actions && d.current.actions.length) list.push({ name: "Backup importato", date: d.exportedAt || new Date().toISOString(), data: d.current });
+        setArchive((a) => a.concat(list.map((x, i) => ({ ...x, id: Date.now() + i }))));
+        showToast(list.length + " partite importate.");
+      } catch (e) { showToast("File di backup non valido."); }
+    };
+    fr.readAsText(file);
+  };
+  const jumpClip = (t) => { jumpTo(t); window.scrollTo({ top: 0, behavior: "smooth" }); };
+
+  const selected = roster.find((r) => r.id === selPlayer);
+  const stepHint = !selPlayer ? "1 · Scegli il giocatore" : !selSkill ? "2 · Scegli il fondamentale" : "3 · Scegli la valutazione";
+  const inputCls = "bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-orange-400";
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      {/* Header + URL */}
+      <header className="border-b border-slate-800 bg-slate-900 px-4 py-3">
+        <div className="mx-auto flex max-w-[1500px] flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 text-lg font-bold">
+            <Film className="h-6 w-6 text-orange-400" />
+            VolleyScout
+          </div>
+          <form onSubmit={loadVideo} className="flex min-w-[260px] flex-1 gap-2">
+            <div className="relative flex-1">
+              <Link2 className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+              <input
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="Incolla il link YouTube della partita"
+                className={`${inputCls} w-full pl-9`}
+              />
+            </div>
+            <button className="rounded-lg bg-orange-500 px-4 py-2 font-semibold text-slate-950 hover:bg-orange-400">
+              Carica video
+            </button>
+          </form>
+          <button onClick={resetMatch} className="flex items-center gap-2 rounded-lg border border-rose-500/60 px-3 py-2 text-sm font-semibold text-rose-300 hover:bg-rose-500 hover:text-white">
+            <Trash2 className="h-4 w-4" /> Reset Partita
+          </button>
+          <button onClick={exportMatch} className="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold hover:bg-slate-700">📤 Esporta Partita (.json)</button>
+          <label className="cursor-pointer rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold hover:bg-slate-700">📥 Importa Partita (.json)<input type="file" accept="application/json,.json" className="hidden" onChange={(e) => { importMatch(e.target.files[0]); e.target.value = ""; }} /></label>
+          <button onClick={saveCloud} disabled={cloud.type === "busy"} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-bold text-white hover:bg-sky-500 disabled:opacity-50">☁️ Salva su Cloud</button>
+          <button onClick={loadCloud} disabled={cloud.type === "busy"} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-bold text-white hover:bg-indigo-500 disabled:opacity-50">🔄 Carica da Cloud</button>
+          {cloud.text && <span role="status" className={`rounded-full px-3 py-1 text-xs font-semibold ${cloud.type === "ok" ? "bg-emerald-500 text-emerald-950" : cloud.type === "err" ? "bg-rose-500 text-rose-950" : "bg-slate-700 text-slate-100"}`}>{cloud.text}</span>}
+        </div>
+        {urlError && <p className="mx-auto mt-2 max-w-[1500px] text-sm text-rose-400">{urlError}</p>}
+      </header>
+
+      <nav className="mx-auto flex max-w-[1500px] gap-2 overflow-x-auto px-4 pt-3">
+        {[["scout", "🎬 Scouting & Pagelle"], ["kpi", "📊 KPI & Rotazioni"], ["arch", "🗂️ Archivio"]].map(([k, l]) => (
+          <button key={k} onClick={() => setTab(k)} className={`shrink-0 rounded-full px-4 py-2 text-sm font-semibold ${tab === k ? "bg-orange-500 text-slate-950" : "bg-slate-800"}`}>{l}</button>
+        ))}
+      </nav>
+      {tab === "scout" && (<>
+      {/* TABELLONE ELETTRONICO LED DA PALESTRA (Sticky su mobile) */}
+      <div className="sticky top-0 z-30 mx-auto max-w-[1500px] px-2 pt-2 sm:px-4 sm:pt-4">
+        <section aria-label="Tabellone segnapunti LED" className="led-board rounded-2xl px-3 py-2.5 sm:px-6 sm:py-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-4">
+            {/* SQUADRA CASA (PHOENIX / NOI) */}
+            <div className="flex min-w-[115px] flex-1 items-center justify-between gap-2 rounded-xl border border-slate-800/90 bg-black/70 px-3 py-1.5 sm:px-4 sm:py-2.5">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className={`inline-block h-2.5 w-2.5 rounded-full ${game.serving ? "led-dot-on" : "bg-slate-800"}`} title="Battuta Noi" />
+                  <button type="button" onClick={() => editTeamName("home")} title="Tocca per cambiare nome squadra di casa" className="group flex items-center gap-1 truncate text-left text-xs font-extrabold tracking-widest text-slate-200 hover:text-orange-300 sm:text-sm"><span className="truncate">{game.homeName}</span><Pencil className="h-3 w-3 shrink-0 opacity-60 group-hover:opacity-100" /></button>
+                </div>
+                <div className="mt-0.5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-amber-400/90 sm:text-xs">
+                  {game.serving ? "🏐 BATTUTA" : <span className="text-slate-600">RICEZIONE</span>}
+                </div>
+              </div>
+              <div className="led-red select-none text-4xl font-black leading-none tabular-nums sm:text-6xl">
+                {String(ptsNoi).padStart(2, "0")}
+              </div>
+            </div>
+
+            {/* CENTRO: SET CORRENTE + SET VINTI + ROTAZIONE */}
+            <div className="order-last flex w-full items-center justify-between gap-2 rounded-xl border border-slate-800/90 bg-black/80 px-3 py-1.5 sm:order-none sm:w-auto sm:flex-col sm:justify-center sm:px-5 sm:py-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">SET</span>
+                <div className="flex gap-1">
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <button
+                      key={n}
+                      onClick={() => setGame((g) => ({ ...g, set: n }))}
+                      className={`h-6 w-6 rounded text-xs font-black transition sm:h-7 sm:w-7 ${game.set === n ? "bg-amber-400 text-slate-950 shadow-[0_0_10px_rgba(251,191,36,0.6)]" : "bg-slate-900 text-slate-400 hover:bg-slate-800"}`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+                <span className="led-amber ml-1 rounded border border-amber-500/40 bg-amber-950/40 px-2 py-0.5 text-xs font-black sm:text-sm">
+                  P{game.rot}
+                </span>
+              </div>
+
+              {/* CONTATORE SET VINTI (NOI - AVV) */}
+              <div className="flex items-center gap-2 sm:mt-1.5">
+                <div className="flex items-center gap-1" title="Set vinti Phoenix (clicca per regolare)">
+                  <button onClick={() => adjustSetsWon(0, -1)} className="px-1 text-xs text-slate-500 hover:text-slate-300" aria-label="Riduci set vinti Noi">−</button>
+                  <span className="led-green text-lg font-black tabular-nums sm:text-2xl">{game.setsWon[0]}</span>
+                  <div className="flex gap-1">
+                    {[0, 1, 2].map((i) => (
+                      <span key={i} className={`h-2 w-2 rounded-full ${i < game.setsWon[0] ? "led-set-pip-on" : "bg-slate-800"}`} />
+                    ))}
+                  </div>
+                  <button onClick={() => adjustSetsWon(0, 1)} className="px-1 text-xs text-slate-500 hover:text-slate-300" aria-label="Aumenta set vinti Noi">+</button>
+                </div>
+
+                <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-500">SET</span>
+
+                <div className="flex items-center gap-1" title="Set vinti Ospiti (clicca per regolare)">
+                  <button onClick={() => adjustSetsWon(1, -1)} className="px-1 text-xs text-slate-500 hover:text-slate-300" aria-label="Riduci set vinti Ospiti">−</button>
+                  <div className="flex gap-1">
+                    {[0, 1, 2].map((i) => (
+                      <span key={i} className={`h-2 w-2 rounded-full ${i < game.setsWon[1] ? "led-set-pip-on" : "bg-slate-800"}`} />
+                    ))}
+                  </div>
+                  <span className="led-green text-lg font-black tabular-nums sm:text-2xl">{game.setsWon[1]}</span>
+                  <button onClick={() => adjustSetsWon(1, 1)} className="px-1 text-xs text-slate-500 hover:text-slate-300" aria-label="Aumenta set vinti Ospiti">+</button>
+                </div>
+              </div>
+            </div>
+
+            {/* SQUADRA OSPITI (AVVERSARI) */}
+            <div className="flex min-w-[115px] flex-1 items-center justify-between gap-2 rounded-xl border border-slate-800/90 bg-black/70 px-3 py-1.5 sm:px-4 sm:py-2.5">
+              <div className="led-red select-none text-4xl font-black leading-none tabular-nums sm:text-6xl">
+                {String(ptsAvv).padStart(2, "0")}
+              </div>
+              <div className="min-w-0 text-right">
+                <div className="flex items-center justify-end gap-1.5">
+                  <button type="button" onClick={() => editTeamName("away")} title="Tocca per cambiare nome squadra ospite" className="group flex items-center gap-1 truncate text-right text-xs font-extrabold tracking-widest text-slate-200 hover:text-orange-300 sm:text-sm"><Pencil className="h-3 w-3 shrink-0 opacity-60 group-hover:opacity-100" /><span className="truncate">{game.awayName}</span></button>
+                  <span className={`inline-block h-2.5 w-2.5 rounded-full ${!game.serving ? "led-dot-on" : "bg-slate-800"}`} title="Battuta Ospiti" />
+                </div>
+                <div className="mt-0.5 flex items-center justify-end gap-1 text-[10px] font-bold uppercase tracking-wider text-amber-400/90 sm:text-xs">
+                  {!game.serving ? "🏐 BATTUTA" : <span className="text-slate-600">RICEZIONE</span>}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* PULSANTI RAPIDI PUNTO + ANNULLA + CHIUDI SET */}
+          <div className="mt-2 grid grid-cols-4 gap-1.5 sm:mt-3 sm:gap-2">
+            <button onClick={() => closeRally(true)} className="rounded-lg bg-emerald-500 py-2 text-xs font-black text-emerald-950 shadow hover:bg-emerald-400 active:scale-95 sm:py-2.5 sm:text-sm">
+              +1 {game.homeName.slice(0, 10)}
+            </button>
+            <button onClick={() => closeRally(false)} className="rounded-lg bg-rose-500 py-2 text-xs font-black text-rose-950 shadow hover:bg-rose-400 active:scale-95 sm:py-2.5 sm:text-sm">
+              +1 {game.awayName.slice(0, 10)}
+            </button>
+            <button onClick={undoRally} disabled={!rallies.length} className="rounded-lg border border-slate-700 bg-slate-800 py-2 text-xs font-bold text-slate-200 hover:bg-slate-700 disabled:opacity-40 sm:py-2.5 sm:text-sm">
+              ↩️ Annulla
+            </button>
+            <button onClick={closeSet} disabled={ptsNoi === 0 && ptsAvv === 0} className="rounded-lg border border-amber-500/50 bg-amber-500/15 py-2 text-xs font-bold text-amber-300 hover:bg-amber-500 hover:text-slate-950 disabled:opacity-40 sm:py-2.5 sm:text-sm">
+              🏁 Chiudi Set
+            </button>
+          </div>
+        </section>
+      </div>
+      <main className="mx-auto grid max-w-[1500px] gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_440px]">
+        {/* Colonna sinistra */}
+        <div className="space-y-4">
+          {/* Player */}
+          <section className="overflow-hidden rounded-xl border border-slate-800 bg-black">
+            <div className="relative aspect-video">
+              <div ref={hostRef} className="absolute inset-0 [&_iframe]:h-full [&_iframe]:w-full" />
+              {!videoId && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-400">
+                  <Film className="h-12 w-12" />
+                  <p>Incolla un link YouTube in alto per iniziare lo scouting.</p>
+                </div>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2 bg-slate-900 p-3">
+              <button onClick={() => skip(-5)} disabled={!playerReady} className="flex items-center gap-1 rounded-lg bg-slate-800 px-3 py-2 hover:bg-slate-700 disabled:opacity-40">
+                <Rewind className="h-4 w-4" /> 5s
+              </button>
+              <button onClick={togglePlay} disabled={!playerReady} className="flex items-center gap-2 rounded-lg bg-orange-500 px-5 py-2 font-semibold text-slate-950 hover:bg-orange-400 disabled:opacity-40">
+                {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                {playing ? "Pausa" : "Play"}
+              </button>
+              <button onClick={() => skip(5)} disabled={!playerReady} className="flex items-center gap-1 rounded-lg bg-slate-800 px-3 py-2 hover:bg-slate-700 disabled:opacity-40">
+                5s <FastForward className="h-4 w-4" />
+              </button>
+              <span className="ml-2 font-mono text-lg tabular-nums text-slate-200">{fmt(now)}</span>
+              <div className="ml-auto flex items-center gap-1">
+                {SPEEDS.map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => changeSpeed(r)}
+                    disabled={!playerReady}
+                    className={`rounded-lg px-3 py-2 text-sm font-semibold disabled:opacity-40 ${speed === r ? "bg-slate-100 text-slate-950" : "bg-slate-800 hover:bg-slate-700"}`}
+                  >
+                    {r}x
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 border-t border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-400">
+              <Keyboard className="h-4 w-4" />
+              Spazio: play/pausa · ← → : −3s / +3s · S: ⭐ per AI · Esc: annulla selezione
+            </div>
+          </section>
+
+          {/* Tagging */}
+          <section className="space-y-4 rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-lg font-bold">Tagging rapido</h2>
+              <span className={`rounded-full px-3 py-1 text-sm font-semibold ${flash ? "bg-emerald-500 text-emerald-950" : "bg-slate-800 text-orange-300"}`}>
+                {flash ? `Salvato: ${flash}` : stepHint}
+              </span>
+            </div>
+
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-slate-300">Giocatore</h3>
+                <button onClick={() => setEditRoster((v) => !v)} className="flex items-center gap-1 text-sm text-slate-300 hover:text-white">
+                  {editRoster ? <Check className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
+                  {editRoster ? "Fine modifica" : "Modifica roster"}
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {roster.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => { setSelPlayer(p.id); setSelSkill(null); }}
+                    className={`rounded-lg border p-2 text-left transition ${selPlayer === p.id ? "border-orange-400 bg-orange-500 text-slate-950" : "border-slate-700 bg-slate-800 hover:border-slate-500"}`}
+                  >
+                    <div className="text-2xl font-extrabold leading-none">{p.number}</div>
+                    <div className="mt-1 truncate text-sm font-semibold">{p.name}</div>
+                    <div className={`truncate text-xs ${selPlayer === p.id ? "text-slate-900" : "text-slate-400"}`}>{p.role}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <h3 className="mb-2 text-sm font-semibold text-slate-300">Fondamentale</h3>
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+                {SKILLS.map((s) => (
+                  <button
+                    key={s}
+                    disabled={!selPlayer}
+                    onClick={() => setSelSkill(s)}
+                    className={`rounded-lg px-2 py-3 font-semibold transition disabled:opacity-30 ${selSkill === s ? "bg-orange-500 text-slate-950" : "bg-slate-800 hover:bg-slate-700"}`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <button onClick={() => setFlagNext((v) => !v)} className={`w-full rounded-lg border px-3 py-2 text-sm font-semibold ${flagNext ? "border-yellow-400 bg-yellow-400 text-slate-950" : "border-slate-600 bg-slate-800 text-slate-200"}`}>
+              {flagNext ? "⭐ Prossima azione segnata per AI (S)" : "☆ Segna per AI (tasto S)"}
+            </button>
+            <div>
+              <h3 className="mb-2 text-sm font-semibold text-slate-300">
+                Valutazione {selected && selSkill ? `· #${selected.number} ${selSkill}` : ""}
+              </h3>
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+                {RESULTS.map((r) => (
+                  <button
+                    key={r.key}
+                    disabled={!selPlayer || !selSkill}
+                    onClick={() => commitTag(r.key)}
+                    title={r.label}
+                    className={`rounded-lg py-3 transition disabled:opacity-30 ${r.cls}`}
+                  >
+                    <div className="text-3xl font-black leading-none">{r.key}</div>
+                    <div className="mt-1 text-xs font-semibold">{r.label}</div>
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-slate-400">
+                Il tag salva il tempo del video meno {LEAD_SECONDS} secondi, così la clip parte poco prima dell'azione.
+              </p>
+            </div>
+          </section>
+
+          <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-lg font-bold">Campo &amp; Rotazione</h2>
+              <div className="flex gap-1">{[1, 2, 3, 4, 5].map((n) => (
+                <button key={n} onClick={() => setGame((g) => ({ ...g, set: n }))} className={`rounded-lg px-3 py-1 text-sm font-semibold ${game.set === n ? "bg-orange-500 text-slate-950" : "bg-slate-800"}`}>Set {n}</button>
+              ))}</div>
+            </div>
+            <Court game={game} roster={roster} selZone={selZone} swapFrom={swapFrom} onZone={onZoneTap} onSwap={swapZones} onBench={benchToZone} />
+            {swapFrom && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-sky-400/60 bg-sky-950 p-3 text-sm">
+                <span>⇄ Tocca la zona con cui scambiare la Zona {swapFrom}</span>
+                <button onClick={() => setSwapFrom(null)} className="rounded-lg bg-slate-700 px-3 py-1 font-semibold">Annulla</button>
+              </div>
+            )}
+            <div className="rounded-lg bg-slate-800 p-2">
+              <p className="mb-1 text-xs font-semibold text-slate-400">Panchina · trascina un giocatore su una zona (o trascina una zona su un'altra per scambiarle)</p>
+              <div className="flex flex-wrap gap-2">
+                {roster.filter((r) => !effLineup(game).base.includes(r.id) && r.id !== game.libero.id).map((r) => (
+                  <div key={r.id} draggable onDragStart={(e) => { e.dataTransfer.setData("text/plain", JSON.stringify({ t: "bench", id: r.id })); e.dataTransfer.effectAllowed = "move"; }} className="cursor-grab rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-sm font-semibold">{r.number} {r.name}</div>
+                ))}
+                {!roster.some((r) => !effLineup(game).base.includes(r.id) && r.id !== game.libero.id) && <span className="text-xs text-slate-500">nessuno in panchina</span>}
+              </div>
+            </div>
+            {selZone && (() => {
+              const ef = effLineup(game);
+              const cur = roster.find((r) => r.id === ef.eff[selZone - 1]);
+              return (
+                <div className="rounded-lg border border-orange-400/60 bg-slate-800 p-3">
+                  <p className="mb-2 text-sm font-semibold">Zona {selZone}{cur ? ` · #${cur.number} ${cur.name}` : ""} · scegli chi entra</p>
+                  <div className="flex flex-wrap gap-2">
+                    {roster.filter((r) => !ef.base.includes(r.id) && r.id !== game.libero.id).map((r) => (
+                      <button key={r.id} onClick={() => doSubZone(selZone, r.id)} className="rounded-lg bg-slate-700 px-3 py-2 text-sm font-semibold hover:bg-slate-600">{r.number} {r.name}</button>
+                    ))}
+                    <button onClick={() => { setSwapFrom(selZone); setSelZone(null); }} className="rounded-lg bg-sky-700 px-3 py-2 text-sm font-semibold hover:bg-sky-600">⇄ Scambia con un'altra zona</button>
+                    <button onClick={() => doSubZone(selZone, "")} className="rounded-lg bg-slate-700 px-3 py-2 text-sm font-semibold text-rose-300 hover:bg-slate-600">Svuota</button>
+                    {cur && <button onClick={() => { setSelPlayer(cur.id); setSelSkill(null); setSelZone(null); }} className="rounded-lg bg-orange-500 px-3 py-2 text-sm font-semibold text-slate-950">🎯 Tagga #{cur.number}</button>}
+                  </div>
+                </div>
+              );
+            })()}
+            <div className="flex flex-wrap items-center gap-1">
+              {[1, 2, 3, 4, 5, 6].map((n) => (
+                <button key={n} onClick={() => setGame((g) => ({ ...g, rot: n }))} className={`rounded-lg px-3 py-2 font-bold ${game.rot === n ? "bg-sky-500 text-sky-950" : "bg-slate-800"}`}>P{n}</button>
+              ))}
+              <button onClick={() => setGame(rotateBack)} className="ml-1 rounded-lg bg-slate-700 px-3 py-2 font-bold hover:bg-slate-600">↩️ Indietro (-1)</button>
+              <button onClick={() => setGame(rotateOnce)} className="rounded-lg bg-sky-600 px-3 py-2 font-bold text-white hover:bg-sky-500">🔄 Ruota (+1)</button>
+              <button onClick={liberoToggle} className={`rounded-lg px-3 py-2 font-bold ${effLineup(game).libIdx >= 0 ? "bg-amber-400 text-amber-950" : "bg-slate-700"}`}>🛡️ Libero {effLineup(game).libIdx >= 0 ? "OUT" : "IN"}</button>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-300">
+              <label className="flex items-center gap-1"><input type="checkbox" checked={game.auto} onChange={(e) => setGame((g) => ({ ...g, auto: e.target.checked }))} /> Auto-rotazione al cambio palla</label>
+              <label className="flex items-center gap-1"><input type="checkbox" checked={game.serving} onChange={(e) => setGame((g) => ({ ...g, serving: e.target.checked }))} /> Battiamo noi</label>
+            </div>
+            <details className="rounded-lg bg-slate-800 p-3" open>
+              <summary className="cursor-pointer text-sm font-semibold">🛡️ Gestione Libero</summary>
+              <div className="mt-2 space-y-2 text-sm">
+                <select value={game.libero.id || ""} onChange={(e) => setLibero({ id: e.target.value ? Number(e.target.value) : null, partners: game.libero.partners.filter((x) => String(x) !== e.target.value) })} className={`${inputCls} w-full`}>
+                  <option value="">Nessun libero</option>
+                  {roster.map((r) => <option key={r.id} value={r.id}>{r.number} {r.name}{r.role === "Libero" ? " (Libero)" : ""}</option>)}
+                </select>
+                <p className="text-xs text-slate-400">Il Libero cambia con:</p>
+                <div className="flex flex-wrap gap-2">
+                  {roster.filter((r) => r.id !== game.libero.id && r.role !== "Libero").map((r) => (
+                    <label key={r.id} className="flex items-center gap-1 rounded-lg bg-slate-700 px-2 py-1"><input type="checkbox" checked={game.libero.partners.includes(r.id)} onChange={() => togglePartner(r.id)} /> {r.number} {r.name}</label>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-4 text-xs">
+                  <label className="flex items-center gap-1"><input type="radio" name="libmode" checked={game.libero.mode === "after"} onChange={() => setLibero({ mode: "after" })} /> Entra dopo la battuta in Z1</label>
+                  <label className="flex items-center gap-1"><input type="radio" name="libmode" checked={game.libero.mode === "now"} onChange={() => setLibero({ mode: "now" })} /> Subito in Z1</label>
+                </div>
+                <p className="text-xs text-slate-400">In seconda linea (Z1, Z5, Z6) entra il Libero al posto del partner; in Z4 rientra il titolare.</p>
+              </div>
+            </details>
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={() => closeRally(true)} className="rounded-lg bg-emerald-500 py-3 font-bold text-emerald-950 hover:bg-emerald-400">+ Punto Noi</button>
+              <button onClick={() => closeRally(false)} className="rounded-lg bg-rose-500 py-3 font-bold text-rose-950 hover:bg-rose-400">- Punto Avversari</button>
+            </div>
+            <p className="text-xs text-slate-400">Scambi chiusi: {rallies.length} · {rallies.filter((r) => r.won).length}-{rallies.filter((r) => !r.won).length} <button onClick={undoRally} disabled={!rallies.length} className="ml-2 rounded-lg bg-slate-700 px-3 py-1 text-xs font-semibold text-slate-100 hover:bg-slate-600 disabled:opacity-40">↩️ Annulla ultimo punto</button></p>
+          </section>
+
+          {/* Roster editor */}
+          {editRoster && (
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+              <h2 className="mb-3 flex items-center gap-2 text-lg font-bold"><Users className="h-5 w-5" /> Roster</h2>
+              <div className="space-y-2">
+                {roster.map((p) => (
+                  <div key={p.id} className="flex flex-wrap gap-2">
+                    <input type="number" value={p.number} onChange={(e) => updatePlayer(p.id, { number: Number(e.target.value) })} className={`${inputCls} w-20`} aria-label="Numero maglia" />
+                    <input value={p.name} onChange={(e) => updatePlayer(p.id, { name: e.target.value })} className={`${inputCls} min-w-[140px] flex-1`} aria-label="Nome" />
+                    <select value={p.role} onChange={(e) => updatePlayer(p.id, { role: e.target.value })} className={inputCls} aria-label="Ruolo">
+                      {ROLES.map((r) => <option key={r}>{r}</option>)}
+                    </select>
+                    <button onClick={() => removePlayer(p.id)} className="rounded-lg bg-slate-800 px-3 text-rose-400 hover:bg-rose-500 hover:text-white" aria-label="Rimuovi giocatore">
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <form onSubmit={addPlayer} className="mt-4 flex flex-wrap gap-2 border-t border-slate-800 pt-4">
+                <input type="number" placeholder="N°" value={newP.number} onChange={(e) => setNewP({ ...newP, number: e.target.value })} className={`${inputCls} w-20`} />
+                <input placeholder="Nome giocatore" value={newP.name} onChange={(e) => setNewP({ ...newP, name: e.target.value })} className={`${inputCls} min-w-[140px] flex-1`} />
+                <select value={newP.role} onChange={(e) => setNewP({ ...newP, role: e.target.value })} className={inputCls}>
+                  {ROLES.map((r) => <option key={r}>{r}</option>)}
+                </select>
+                <button className="flex items-center gap-1 rounded-lg bg-orange-500 px-4 py-2 font-semibold text-slate-950 hover:bg-orange-400">
+                  <Plus className="h-4 w-4" /> Aggiungi
+                </button>
+              </form>
+            </section>
+          )}
+        </div>
+
+        {/* Colonna destra: registro */}
+        <aside className="flex max-h-[calc(100vh-2rem)] flex-col rounded-xl border border-slate-800 bg-slate-900 lg:sticky lg:top-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 p-3">
+            <h2 className="text-lg font-bold">Registro azioni <span className="text-slate-400">({actions.length})</span></h2>
+            <div className="flex gap-2">
+              <button onClick={exportCSV} disabled={!actions.length} className="flex items-center gap-1 rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold hover:bg-slate-700 disabled:opacity-40">
+                <Download className="h-4 w-4" /> CSV
+              </button>
+              <button onClick={exportJSON} disabled={!actions.length} className="flex items-center gap-1 rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold hover:bg-slate-700 disabled:opacity-40">
+                <Download className="h-4 w-4" /> JSON
+              </button>
+            </div>
+          </div>
+          <div className="flex-1 overflow-auto">
+            {actions.length === 0 ? (
+              <p className="p-6 text-center text-slate-400">Nessuna azione registrata. Scegli giocatore, fondamentale e valutazione per creare il primo tag.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-slate-900 text-left text-slate-400">
+                  <tr>
+                    <th className="p-2">Tempo</th>
+                    <th className="p-2">N°</th>
+                    <th className="p-2">Giocatore</th>
+                    <th className="p-2">Fondamentale</th>
+                    <th className="p-2 text-center">Esito</th>
+                    <th className="p-2 text-center">⭐</th>
+                    <th className="p-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {actions.map((a) => (
+                    <tr
+                      key={a.id}
+                      onClick={() => jumpTo(a.time)}
+                      className="cursor-pointer border-t border-slate-800 hover:bg-slate-800"
+                      title="Vai al momento dell'azione"
+                    >
+                      <td className="p-2 font-mono tabular-nums text-orange-300">{fmt(a.time)}</td>
+                      <td className="p-2 font-bold">{a.number}</td>
+                      <td className="p-2">{a.name}</td>
+                      <td className="p-2">{a.skill}</td>
+                      <td className={`p-2 text-center text-xl font-black ${RESULT_TEXT[a.result]}`}>{a.result}</td>
+                      <td className="p-2 text-center"><button onClick={(e) => { e.stopPropagation(); toggleFlag(a.id); }} className="text-xl" aria-label="Segna per AI">{a.aiFlag ? "⭐" : "☆"}</button></td>
+                      <td className="p-2 text-right">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); deleteAction(a.id); }}
+                          className="rounded p-1 text-slate-400 hover:bg-rose-500 hover:text-white"
+                          aria-label="Elimina azione"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </aside>
+      </main>
+
+      <section className="mx-auto max-w-[1500px] p-4 pt-0" id="pagelle">
+        <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <h2 className="flex items-center gap-2 text-xl font-bold"><ClipboardList className="h-6 w-6 text-orange-400" /> Pagelle &amp; Report</h2>
+          <p className="mt-1 text-sm text-slate-400">Nessuna API: copia i dati della partita, incollali su Claude e riporta qui la risposta JSON.</p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button onClick={copyForChatAI} disabled={!ps.length} className="flex items-center gap-2 rounded-lg bg-orange-500 px-4 py-3 font-semibold text-slate-950 hover:bg-orange-400 disabled:opacity-40"><Copy className="h-4 w-4" /> 📋 Copia Dati Partita &amp; Prompt per Claude</button>
+            <button onClick={copyMatchLink} disabled={!ps.length} className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-3 font-semibold text-white hover:bg-sky-500 disabled:opacity-40"><Link2 className="h-4 w-4" /> 📢 Copia Link Partita per Gruppo Squadra</button>
+          </div>
+          <div className="mt-4">
+            <label className="mb-1 block text-sm font-semibold text-slate-300" htmlFor="pj">📥 Incolla Risposta JSON di Claude</label>
+            <textarea id="pj" rows={5} value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder='{ "5": { "voto": 7.5, "forza": "...", "consiglio": "..." } }' className={`${inputCls} w-full font-mono text-xs`} />
+            <button onClick={applyReports} disabled={!pasteText.trim()} className="mt-2 flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-500 disabled:opacity-40"><Sparkles className="h-4 w-4" /> ✨ Applica Pagelle</button>
+            {pasteMsg && <p className={`mt-2 rounded-lg p-3 text-sm ${pasteMsg.type === "ok" ? "bg-emerald-950 text-emerald-300" : "bg-rose-950 text-rose-300"}`}>{pasteMsg.text}</p>}
+          </div>
+          {Object.keys(reports).length > 0 && reportCount !== actions.length && (
+            <p className="mt-3 rounded-lg bg-amber-950 p-3 text-sm text-amber-300">Le azioni sono cambiate dopo l'ultima pagella: copia di nuovo i dati e applica un JSON aggiornato.</p>
+          )}
+        </div>
+
+        {ps.length === 0 ? (
+          <p className="p-8 text-center text-slate-400">Nessun giocatore ha ancora azioni o scambi. Fai qualche tag e qui compariranno le pagelle.</p>
+        ) : (
+          <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {ps.map((p) => (
+              <PlayerCard
+                key={p.key}
+                p={p}
+                report={reports[p.key]}
+                videoId={videoId}
+                onClip={jumpClip}
+                onCopy={() => copyWithToast(whatsappText(p, reports[p.key], videoId), `Report di ${p.name} copiato: incollalo su WhatsApp.`)}
+                onLink={() => copyPlayerLink(p)}
+                kpi={kpiRow(p)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+      </>)}
+      {tab === "kpi" && (() => {
+        const rows = [1, 2, 3, 4, 5, 6].map((n) => ({ n, ...kpiData.rot[n] })).filter((r) => r.n >= 0);
+        const live = rows.filter((r) => r.n > 0 || r.w + r.l > 0);
+        const sal = (r) => r.w - r.l;
+        const best = live.length ? live.reduce((a, b) => (sal(b) > sal(a) ? b : a)) : null;
+        const worst = live.length ? live.reduce((a, b) => (sal(b) < sal(a) ? b : a)) : null;
+        const th = "p-2 text-right";
+        return (
+          <section className="mx-auto max-w-[1500px] space-y-4 p-4">
+            <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900 p-4">
+              <h2 className="mb-2 text-lg font-bold">Rotazioni P1–P6</h2>
+              <table className="w-full min-w-[520px] text-sm tabular-nums">
+                <thead className="text-slate-400"><tr><th className="p-2 text-left">Rot.</th><th className={th}>Scambi</th><th className={th}>Punti fatti</th><th className={th}>Punti subiti</th><th className={th}>Saldo ±</th><th className={th}>Side-Out %</th><th className={th}>Break Point %</th></tr></thead>
+                <tbody>{rows.map((r) => (
+                  <tr key={r.n} className={`border-t border-slate-800 text-right ${best && r.n === best.n && sal(r) > 0 ? "bg-emerald-950/60" : ""} ${worst && r.n === worst.n && live.length > 1 ? "bg-rose-950/60" : ""}`}>
+                    <td className="p-2 text-left font-bold">P{r.n}{best && r.n === best.n && live.length > 1 ? " 🏆" : ""}{worst && r.n === worst.n && live.length > 1 ? " ⚠️" : ""}</td>
+                    <td className="p-2">{r.w + r.l}</td><td className="p-2">{r.w}</td><td className="p-2">{r.l}</td><td className="p-2 font-bold">{sal(r) > 0 ? "+" : ""}{sal(r)}</td>
+                    <td className="p-2">{pctTxt(pct(r.soW, r.soN))}</td><td className="p-2">{pctTxt(pct(r.bpW, r.bpN))}</td>
+                  </tr>))}</tbody>
+              </table>
+              <p className="mt-2 text-xs text-slate-400">🏆 rotazione migliore (saldo più alto) · ⚠️ più critica (saldo più basso). Side-Out: scambi vinti in ricezione. Break Point: scambi vinti al servizio.</p>
+            </div>
+            <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900 p-4">
+              <h2 className="mb-2 text-lg font-bold">KPI individuali</h2>
+              <table className="w-full min-w-[820px] text-sm tabular-nums">
+                <thead className="text-slate-400"><tr><th className="p-2 text-left">Giocatore</th><th className={th}>Scambi</th><th className={th}>Set eq.</th><th className={th}>TPI %</th><th className={th}>Saldo ±</th><th className={th}>Ball Ret. %</th><th className={th}>PPS</th><th className={th}>Resil. %</th><th className={th}>Regia %</th><th className={th}>Conv. Alz. %</th></tr></thead>
+                <tbody>{ps.map((p) => { const v = kpiRow(p); return (
+                  <tr key={p.key} className="border-t border-slate-800 text-right">
+                    <td className="p-2 text-left font-semibold">{p.number} {p.name}</td><td className="p-2">{v.n}</td><td className="p-2">{v.setEq}</td><td className="p-2">{v.setter ? "N/A (Regia)" : pctTxt(v.tpi)}</td>
+                    <td className="p-2 font-bold">{v.net > 0 ? "+" : ""}{v.net}</td><td className="p-2">{pctTxt(v.ret)}</td><td className="p-2">{v.pps}</td><td className="p-2">{pctTxt(v.res)}</td><td className="p-2">{v.setter ? pctTxt(v.qr) : "–"}</td><td className="p-2">{v.setter ? pctTxt(v.conv) : "–"}</td>
+                  </tr>); })}</tbody>
+              </table>
+              <p className="mt-2 text-xs text-slate-400">TPI: scambi con tocco del giocatore, vinti = +1, persi con suo = −1, persi con suo / −0,5 (non calcolato per il Palleggiatore). Regia %: alzate # e + sul totale alzate. Conv. Alz.: % scambi chiusi a punto dopo una sua alzata # o +. Ball Retention: tocchi senza errore (= escluso, / non conta). PPS: punti (#) in attacco/battuta/muro per set. Resilienza: % di azioni # o + subito dopo un = o un - (i / sono ignorati). Set eq. = scambi / {SET_EQ}.</p>
+            </div>
+          </section>
+        );
+      })()}
+      {tab === "arch" && (
+        <section className="mx-auto max-w-[1500px] space-y-3 p-4">
+          <div className="flex flex-wrap gap-2">
+            <button onClick={saveArchive} disabled={!actions.length} className="rounded-lg bg-orange-500 px-4 py-2 font-semibold text-slate-950 disabled:opacity-40">💾 Salva in Archivio Stagione</button>
+            <button onClick={exportBackup} className="rounded-lg bg-slate-800 px-4 py-2 font-semibold hover:bg-slate-700">⬇️ Esporta Backup JSON</button>
+            <label className="cursor-pointer rounded-lg bg-slate-800 px-4 py-2 font-semibold hover:bg-slate-700">⬆️ Importa Backup JSON<input type="file" accept="application/json,.json" className="hidden" onChange={(e) => { importBackup(e.target.files[0]); e.target.value = ""; }} /></label>
+          </div>
+          <p className="text-xs text-slate-400">La partita corrente si salva da sola in questo browser. Il backup contiene solo i dati di scouting.</p>
+          {archive.length === 0 && <p className="rounded-xl bg-slate-900 p-6 text-center text-slate-400">Archivio vuoto.</p>}
+          {archive.slice().reverse().map((it) => (
+            <div key={it.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 p-3">
+              <div className="min-w-0 flex-1"><div className="truncate font-bold">{it.name}</div><div className="text-xs text-slate-400">{new Date(it.date).toLocaleDateString("it-IT")} · {(it.data.actions || []).length} azioni · {(it.data.rallies || []).length} scambi</div></div>
+              <button onClick={() => loadArchive(it)} className="rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold">Carica</button>
+              <button onClick={() => { if (window.confirm("Eliminare dall'archivio?")) setArchive((a) => a.filter((x) => x.id !== it.id)); }} className="rounded-lg bg-slate-800 px-3 py-2 text-sm text-rose-400">Elimina</button>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {toast && (
+        <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full bg-slate-100 px-5 py-3 text-sm font-semibold text-slate-950 shadow-lg">{toast}</div>
+      )}
+    </div>
+  );
+}
+
+/* ================= VISTA ATLETA (#report=...) ================= */
+const FILTERS = [
+  { key: "all", label: "Tutte" },
+  { key: "#", label: "Punti #" },
+  { key: "+", label: "Positivi +" },
+  { key: "-", label: "Negativi -" },
+  { key: "/", label: "Murati /" },
+  { key: "=", label: "Errori =" },
+];
+const RESULT_BADGE = {
+  "#": "bg-emerald-500 text-emerald-950",
+  "+": "bg-sky-500 text-sky-950",
+  "-": "bg-amber-400 text-amber-950",
+  "/": "bg-violet-500 text-violet-950",
+  "=": "bg-rose-500 text-rose-950",
+};
+
+function ReportError() {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-950 p-6 text-center text-slate-100">
+      <h1 className="text-2xl font-bold">Link non valido</h1>
+      <p className="max-w-sm text-slate-400">Questa pagella non si apre: il link è incompleto o è stato modificato. Chiedi al tuo allenatore di inviartelo di nuovo.</p>
+    </div>
+  );
+}
+
+function AthleteView({ data, onSwitch }) {
+  const { number, name, role, voto, forza, consiglio, videoId, actions, kpi } = data;
+  const [apiReady, setApiReady] = useState(false);
+  const [filter, setFilter] = useState("all");
+  const [activeId, setActiveId] = useState(null);
+  const hostRef = useRef(null);
+  const playerRef = useRef(null);
+  const readyRef = useRef(false);
+  const pendingRef = useRef(null);
+
+  const stat = computeStats(actions.map((a) => ({ ...a, number, name, role })))[0];
+  const visible = filter === "all" ? actions : actions.filter((a) => a.result === filter);
+  const countOf = (k) => (k === "all" ? actions.length : actions.filter((a) => a.result === k).length);
+
+  useEffect(() => { document.title = "Pagella " + name + " - VolleyScout"; }, [name]);
+
+  useEffect(() => {
+    if (!videoId) return;
+    if (window.YT && window.YT.Player) { setApiReady(true); return; }
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => { if (prev) prev(); setApiReady(true); };
+    if (!document.getElementById("yt-iframe-api")) {
+      const s = document.createElement("script");
+      s.id = "yt-iframe-api";
+      s.src = "https://www.youtube.com/iframe_api";
+      document.head.appendChild(s);
+    }
+  }, [videoId]);
+
+  useEffect(() => {
+    if (!apiReady || !videoId || playerRef.current || !hostRef.current) return;
+    const mount = document.createElement("div");
+    hostRef.current.innerHTML = "";
+    hostRef.current.appendChild(mount);
+    playerRef.current = new window.YT.Player(mount, {
+      videoId,
+      width: "100%",
+      height: "100%",
+      playerVars: { playsinline: 1, rel: 0, modestbranding: 1, controls: 1 },
+      events: {
+        onReady: () => {
+          readyRef.current = true;
+          if (pendingRef.current !== null) {
+            const t = pendingRef.current;
+            pendingRef.current = null;
+            try { playerRef.current.seekTo(t, true); playerRef.current.playVideo(); } catch (e) {}
+          }
+        },
+      },
+    });
+  }, [apiReady, videoId]);
+
+  useEffect(() => () => {
+    try { playerRef.current && playerRef.current.destroy(); } catch (e) {}
+  }, []);
+
+  const playClip = (a) => {
+    setActiveId(a.id);
+    if (readyRef.current && playerRef.current) {
+      try { playerRef.current.seekTo(a.time, true); playerRef.current.playVideo(); } catch (e) {}
+    } else {
+      pendingRef.current = a.time;
+    }
+  };
+
+  const hasGrade = typeof voto === "number";
+
+  return (
+    <div className="min-h-screen bg-slate-950 pb-10 text-slate-100">
+      <div className="mx-auto max-w-2xl">
+        {/* Intestazione atleta */}
+        <header className="border-b border-slate-800 bg-slate-900 px-4 pb-5 pt-5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="flex items-center gap-2 text-sm font-semibold text-orange-400">
+              <Film className="h-4 w-4" /> Pagella della partita
+            </p>
+            {onSwitch && <button onClick={onSwitch} className="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold hover:bg-slate-700">👤 Cambia Giocatore</button>}
+          </div>
+          <div className="mt-4 flex items-center gap-3">
+            <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-2xl bg-orange-500 text-5xl font-black text-slate-950">{number}</div>
+            <div className="min-w-0 flex-1">
+              <h1 className="break-words text-2xl font-extrabold leading-tight">{name}</h1>
+              <p className="mt-1 text-slate-400">{role}</p>
+            </div>
+            <div className={`flex shrink-0 flex-col items-center rounded-2xl px-4 py-2 ${hasGrade ? gradeColor(voto) : "border border-dashed border-slate-600 text-slate-400"}`}>
+              <span className="text-xs font-semibold">Voto</span>
+              <span className="text-5xl font-black leading-none">{hasGrade ? voto.toFixed(1) : "–"}</span>
+            </div>
+          </div>
+        </header>
+
+        <main className="space-y-4 p-4">
+          {/* Commenti AI */}
+          {forza && (
+            <section className="rounded-xl border-l-4 border-emerald-500 bg-emerald-950/50 p-4">
+              <h2 className="font-bold text-emerald-300">Punto di forza</h2>
+              <p className="mt-1 text-slate-100">{forza}</p>
+            </section>
+          )}
+          {consiglio && (
+            <section className="rounded-xl border-l-4 border-orange-400 bg-orange-950/40 p-4">
+              <h2 className="font-bold text-orange-300">Consiglio tecnico</h2>
+              <p className="mt-1 text-slate-100">{consiglio}</p>
+            </section>
+          )}
+
+          {kpi && kpi.n > 0 && (
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+              <h2 className="mb-3 text-lg font-bold">KPI avanzati</h2>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                {(kpi.setter ? [["TPI", "N/A (Regia)"], ["Qualità Regia (# + +)", pctTxt(kpi.qr)], ["Conv. Punti su Alzata", pctTxt(kpi.conv)]] : [["TPI", pctTxt(kpi.tpi)]]).concat([["Saldo ±", (kpi.net > 0 ? "+" : "") + kpi.net], ["Ball Retention", pctTxt(kpi.ret)], ["Punti/Set", kpi.pps], ["Resilienza", pctTxt(kpi.res)], ["Scambi", kpi.n]]).map(([l, v]) => (
+                  <div key={l} className="rounded-lg bg-slate-800 p-2"><div className="text-xl font-bold">{v}</div><div className="text-xs text-slate-400">{l}</div></div>
+                ))}
+              </div>
+            </section>
+          )}
+          {/* Statistiche */}
+          <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <h2 className="mb-3 text-lg font-bold">I tuoi numeri</h2>
+            {stat ? (
+              <>
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="rounded-lg bg-slate-800 p-2"><div className="text-2xl font-bold">{stat.total.tot}</div><div className="text-xs text-slate-400">Tocchi</div></div>
+                  <div className="rounded-lg bg-slate-800 p-2"><div className="text-2xl font-bold">{pctTxt(stat.total.pos)}</div><div className="text-xs text-slate-400">Positività</div></div>
+                  <div className="rounded-lg bg-slate-800 p-2"><div className="text-2xl font-bold">{pctTxt(stat.total.eff)}</div><div className="text-xs text-slate-400">Efficienza</div></div>
+                </div>
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full min-w-[420px] text-sm">
+                    <thead className="text-slate-400">
+                      <tr className="text-right">
+                        <th className="p-1 text-left">Fondamentale</th><th className="p-1">Tot</th><th className="p-1">#</th><th className="p-1">+</th><th className="p-1">-</th><th className="p-1 text-violet-400">/</th><th className="p-1">=</th><th className="p-1">Pos</th><th className="p-1">Eff</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stat.skills.map((s) => (
+                        <tr key={s.skill} className="border-t border-slate-800 text-right tabular-nums">
+                          <td className="p-1 text-left font-semibold">{s.skill}</td>
+                          <td className="p-1">{s.tot}</td>
+                          <td className="p-1 text-emerald-400">{s["#"]}</td>
+                          <td className="p-1 text-sky-400">{s["+"]}</td>
+                          <td className="p-1 text-amber-400">{s["-"]}</td>
+                <td className="p-1 text-violet-400">{s["/"]}</td>
+                          <td className="p-1 text-rose-400">{s["="]}</td>
+                          <td className="p-1">{pctTxt(s.pos)}</td>
+                          <td className="p-1">{pctTxt(s.eff)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="mt-2 text-xs text-slate-500"># punto o perfetta · + positiva · - negativa · / murato o merito avversario (peso −0,5) · = errore (peso −1)</p>
+              </>
+            ) : (
+              <p className="text-slate-400">Nessuna azione registrata per questa partita.</p>
+            )}
+          </section>
+
+          {/* Video e clip */}
+          <section>
+            <h2 className="mb-2 text-lg font-bold">Rivedi le tue azioni</h2>
+            {videoId ? (
+              <div className="sticky top-0 z-20 -mx-4 bg-black sm:mx-0 sm:overflow-hidden sm:rounded-xl">
+                <div className="relative aspect-video">
+                  <div ref={hostRef} className="absolute inset-0 [&_iframe]:h-full [&_iframe]:w-full" />
+                  {!apiReady && <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-400">Caricamento video…</div>}
+                </div>
+              </div>
+            ) : (
+              <p className="rounded-xl bg-slate-900 p-4 text-slate-400">Per questa partita non è collegato nessun video. Qui sotto trovi comunque l'elenco delle tue azioni.</p>
+            )}
+
+            <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+              {FILTERS.map((f) => (
+                <button
+                  key={f.key}
+                  onClick={() => setFilter(f.key)}
+                  className={`shrink-0 rounded-full px-4 py-2 text-sm font-semibold ${filter === f.key ? "bg-orange-500 text-slate-950" : "bg-slate-800 text-slate-200"}`}
+                >
+                  {f.label} ({countOf(f.key)})
+                </button>
+              ))}
+            </div>
+
+            <ul className="mt-3 space-y-2">
+              {visible.length === 0 && <li className="rounded-lg bg-slate-900 p-4 text-center text-slate-400">Nessuna clip in questa categoria.</li>}
+              {visible.map((a) => (
+                <li key={a.id}>
+                  <button
+                    onClick={() => playClip(a)}
+                    disabled={!videoId}
+                    className={`flex min-h-[52px] w-full items-center gap-3 rounded-xl border px-3 py-2 text-left disabled:opacity-60 ${activeId === a.id ? "border-orange-400 bg-slate-800" : "border-slate-800 bg-slate-900 hover:bg-slate-800"}`}
+                  >
+                    <Play className="h-4 w-4 shrink-0 text-orange-400" />
+                    <span className="font-mono text-base tabular-nums text-orange-300">{fmt(a.time)}</span>
+                    <span className="flex-1 font-semibold">{a.skill}</span>
+                    <span className={`flex h-8 w-8 items-center justify-center rounded-lg text-lg font-black ${RESULT_BADGE[a.result]}`}>{a.result}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {videoId && <p className="mt-2 text-xs text-slate-500">Ogni clip parte 3 secondi prima dell'azione.</p>}
+          </section>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+/* ================= APP: vista allenatore o vista atleta ================= */
+function App() {
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onHash = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  const match = readMatchHash();
+  if (match) return match.error ? <ReportError /> : <MatchView key={hash} data={match} />;
+  const report = readReportHash();
+  if (report) return report.error ? <ReportError /> : <AthleteView key={hash} data={report} />;
+  return <VolleyScout />;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
