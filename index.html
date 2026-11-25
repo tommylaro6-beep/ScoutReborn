@@ -451,9 +451,13 @@ const pct = (n, d) => (d ? Math.round((n / d) * 100) : null);
 const derive = (c) => ({ ...c, pos: pct(c["#"] + c["+"], c.tot), eff: pct(c["#"] - c["="] - 0.5 * c["/"], c.tot) });
 const pctTxt = (v) => (v === null ? "–" : v + "%");
 
-function computeStats(actions) {
+/* Filtro per set: setNo = "all" / null (tutta la partita) oppure il numero del set (1-5) */
+const inSet = (x, setNo) => setNo == null || setNo === "all" || (x.set || 1) === setNo;
+
+function computeStats(actions, setNo) {
   const map = new Map();
   actions.forEach((a) => {
+    if (!inSet(a, setNo)) return;
     const key = a.number + "|" + a.name;
     if (!map.has(key)) map.set(key, { key, number: a.number, name: a.name, role: a.role, raw: {}, total: emptyCounts(), actions: [] });
     const p = map.get(key);
@@ -471,7 +475,11 @@ function computeStats(actions) {
     .sort((a, b) => a.number - b.number);
 }
 
-function computeKpi(rallies, actions) {
+function computeKpi(rallies, actions, setNo) {
+  if (setNo != null && setNo !== "all") {
+    rallies = rallies.filter((r) => inSet(r, setNo));
+    actions = actions.filter((a) => inSet(a, setNo));
+  }
   const rot = {};
   for (let i = 1; i <= 6; i++) rot[i] = { n: 0, w: 0, l: 0, soN: 0, soW: 0, bpN: 0, bpW: 0 };
   const pl = {};
@@ -498,17 +506,25 @@ function computeKpi(rallies, actions) {
   });
   return { rot, pl };
 }
-function playerKpi(p, k) {
+function playerKpi(p, k, setNo) {
   k = k || { n: 0, net: 0, sets: new Set(), tN: 0, tW: 0, tS: 0, alN: 0, alW: 0 };
-  const pts = p.actions.filter((a) => a.result === "#" && ["Attacco", "Battuta", "Muro"].includes(a.skill)).length;
+  const f = setNo != null && setNo !== "all";
+  const acts = f ? p.actions.filter((a) => inSet(a, setNo)) : p.actions;
+  let total = p.total, al = (p.skills || []).find((s) => s.skill === "Alzata");
+  if (f) { /* con filtro set ricalcolo totali e Alzata solo sulle azioni di quel set */
+    const t = emptyCounts(), a2 = emptyCounts();
+    acts.forEach((a) => { t[a.result] += 1; t.tot += 1; if (a.skill === "Alzata") { a2[a.result] += 1; a2.tot += 1; } });
+    total = derive(t); al = a2.tot ? derive(a2) : undefined;
+  }
+  const pts = acts.filter((a) => a.result === "#" && ["Attacco", "Battuta", "Muro"].includes(a.skill)).length;
   /* Resilienza: si attiva dopo = o -; i "/" sono ignorati; recupero = azione successiva # o + */
-  const sorted = p.actions.filter((a) => a.result !== "/").sort((a, b) => a.time - b.time);
+  const sorted = acts.filter((a) => a.result !== "/").sort((a, b) => a.time - b.time);
   let errs = 0, ok = 0;
   sorted.forEach((a, i) => { if ((a.result === "=" || a.result === "-") && sorted[i + 1]) { errs++; if (sorted[i + 1].result === "#" || sorted[i + 1].result === "+") ok++; } });
-  const setter = isSetter(p.role), al = (p.skills || []).find((s) => s.skill === "Alzata");
+  const setter = isSetter(p.role);
   return {
     n: k.n, setEq: (k.n / SET_EQ).toFixed(1), setter, tpi: setter ? null : pct(k.tS, k.tN), qr: al ? al.pos : null, conv: pct(k.alW, k.alN), net: k.net,
-    ret: pct(p.total.tot - p.total["="], p.total.tot),
+    ret: pct(total.tot - total["="], total.tot),
     pps: (pts / Math.max(1, k.sets.size)).toFixed(1), res: pct(ok, errs),
   };
 }
@@ -697,6 +713,610 @@ function PlayerCard({ p, report, videoId, onClip, onCopy, onLink, onGen, busy, e
         </button>
       </div>
     </article>
+  );
+}
+
+/* ================= ANALISI & TREND (dashboard) ================= */
+const AN_UI = {}; /* ricorda filtri e selezioni anche cambiando scheda */
+function useAn(key, init) {
+  const [v, setV] = useState(() => (key in AN_UI ? AN_UI[key] : init));
+  useEffect(() => { AN_UI[key] = v; }, [key, v]);
+  return [v, setV];
+}
+
+const TONE = {
+  emerald: { bar: "bg-emerald-500", text: "text-emerald-400", hex: "#34d399" },
+  sky: { bar: "bg-sky-500", text: "text-sky-400", hex: "#38bdf8" },
+  amber: { bar: "bg-amber-400", text: "text-amber-400", hex: "#fbbf24" },
+  rose: { bar: "bg-rose-500", text: "text-rose-400", hex: "#fb7185" },
+  slate: { bar: "bg-slate-600", text: "text-slate-400", hex: "#94a3b8" },
+};
+/* soglie indicative [verde, azzurro, giallo]; sotto = rosso */
+const THRESH = {
+  pos: [70, 55, 40], eff: [35, 20, 5], so: [65, 55, 45], bp: [45, 35, 25],
+  tpi: [30, 10, -10], conv: [60, 50, 40], ret: [95, 90, 85], res: [60, 45, 30],
+};
+const toneOf = (v, kind) => {
+  if (v === null || v === undefined || isNaN(v)) return "slate";
+  const t = THRESH[kind] || THRESH.pos;
+  return v >= t[0] ? "emerald" : v >= t[1] ? "sky" : v >= t[2] ? "amber" : "rose";
+};
+const sgn = (n) => (n > 0 ? "+" : n < 0 ? "−" : "±") + Math.abs(n);
+const DIST = [["#", "bg-emerald-500"], ["+", "bg-sky-500"], ["-", "bg-amber-400"], ["/", "bg-violet-500"], ["=", "bg-rose-500"]];
+const cardCls = "rounded-xl border border-slate-800 bg-slate-900 p-4";
+
+function Bar({ v, kind, tone, h }) {
+  const t = TONE[tone || toneOf(v, kind)];
+  const w = v === null || v === undefined || isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
+  return (
+    <div className={"w-full overflow-hidden rounded-full bg-slate-800 " + (h || "h-2.5")}>
+      <div className={"h-full rounded-full transition-all " + t.bar} style={{ width: w + "%" }} />
+    </div>
+  );
+}
+
+function KpiCard({ icon, label, value, bar, kind, tone, hint }) {
+  const t = TONE[tone || toneOf(bar, kind)];
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-slate-800 bg-slate-900 p-3">
+      <div className="flex items-center gap-1 text-xs font-semibold text-slate-400"><span>{icon}</span>{label}</div>
+      <div className={"text-3xl font-black tabular-nums " + t.text}>{value}</div>
+      {bar !== undefined && <Bar v={bar} kind={kind} tone={tone} />}
+      <p className="text-[11px] leading-snug text-slate-400">{hint}</p>
+    </div>
+  );
+}
+
+function Delta({ d, dec, inv }) {
+  if (d === null || d === undefined || isNaN(d)) return null;
+  const k = Math.pow(10, dec || 0);
+  const r = Math.round(d * k) / k;
+  if (r === 0) return <span className="ml-1 text-[10px] text-slate-500">=</span>;
+  const good = inv ? r < 0 : r > 0;
+  return <span className={"ml-1 text-[10px] font-bold " + (good ? "text-emerald-400" : "text-rose-400")}>{r > 0 ? "+" : "−"}{Math.abs(r).toFixed(dec || 0)}</span>;
+}
+
+/* Grafico a linee SVG nativo (nessuna libreria). mode: pct | grade | auto0 */
+function LineChart({ labels, series, mode, avg }) {
+  const W = 640, H = 260, L = 42, R = 16, T = 14, B = 34;
+  const vals = [];
+  series.forEach((s) => s.values.forEach((v) => { if (v !== null && v !== undefined && !isNaN(v)) vals.push(v); }));
+  if (!vals.length) return <p className="p-4 text-center text-sm text-slate-400">Nessun dato da mostrare.</p>;
+  const mn = Math.min.apply(null, vals.concat(avg != null ? [avg] : []));
+  const mx = Math.max.apply(null, vals.concat(avg != null ? [avg] : []));
+  let lo, hi;
+  if (mode === "pct") { lo = Math.min(0, Math.floor(mn / 10) * 10); hi = 100; }
+  else if (mode === "grade") { lo = 4; hi = 10; }
+  else { lo = 0; hi = Math.max(2, Math.ceil(mx * 1.2)); }
+  const n = labels.length;
+  const X = (i) => (n === 1 ? (L + W - R) / 2 : L + (i * (W - L - R)) / (n - 1));
+  const Y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  const ticks = [0, 1, 2, 3, 4].map((i) => lo + (i * (hi - lo)) / 4);
+  const tk = (v) => (hi - lo <= 10 ? (Math.round(v * 10) / 10).toString() : Math.round(v).toString());
+  const showVals = series.length === 1 && n <= 10;
+  return (
+    <div>
+      <svg viewBox={"0 0 " + W + " " + H} className="w-full" role="img" aria-label="Grafico andamento">
+        {ticks.map((t, i) => (
+          <g key={i}>
+            <line x1={L} x2={W - R} y1={Y(t)} y2={Y(t)} stroke={t === 0 && lo < 0 ? "#64748b" : "#1e293b"} strokeWidth={t === 0 && lo < 0 ? 1.5 : 1} />
+            <text x={L - 6} y={Y(t) + 4} textAnchor="end" fontSize="11" fill="#94a3b8">{tk(t)}</text>
+          </g>
+        ))}
+        {labels.map((lb, i) => (
+          <text key={i} x={X(i)} y={H - 12} textAnchor="middle" fontSize="11" fill="#94a3b8">{lb}</text>
+        ))}
+        {avg != null && (
+          <g>
+            <line x1={L} x2={W - R} y1={Y(avg)} y2={Y(avg)} stroke="#f97316" strokeWidth="1.5" strokeDasharray="5 4" />
+            <text x={W - R} y={Y(avg) - 4} textAnchor="end" fontSize="10" fill="#fb923c">media stagione</text>
+          </g>
+        )}
+        {series.map((s) => {
+          let d = "", pen = false;
+          s.values.forEach((v, i) => {
+            if (v === null || v === undefined || isNaN(v)) { pen = false; return; }
+            d += (pen ? " L " : " M ") + X(i).toFixed(1) + " " + Y(v).toFixed(1);
+            pen = true;
+          });
+          return (
+            <g key={s.name}>
+              <path d={d} fill="none" stroke={s.color} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+              {s.values.map((v, i) => (v === null || v === undefined || isNaN(v) ? null : (
+                <g key={i}>
+                  <circle cx={X(i)} cy={Y(v)} r="4.5" fill={s.color} stroke="#0f172a" strokeWidth="1.5"><title>{labels[i] + " · " + s.name + ": " + (Math.round(v * 10) / 10)}</title></circle>
+                  {showVals && <text x={X(i)} y={Y(v) - 9} textAnchor="middle" fontSize="11" fontWeight="700" fill={s.color}>{Math.round(v * 10) / 10}</text>}
+                </g>
+              )))}
+            </g>
+          );
+        })}
+      </svg>
+      <div className="mt-1 flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs">
+        {series.map((s) => (<span key={s.name} className="flex items-center gap-1 text-slate-300"><span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: s.color }} />{s.name}</span>))}
+      </div>
+    </div>
+  );
+}
+
+/* Riepilogo di squadra su azioni + scambi (opz. filtrati per set) */
+function teamKpi(actions, rallies, setNo) {
+  const acts = actions.filter((a) => inSet(a, setNo));
+  const rs = rallies.filter((r) => inSet(r, setNo));
+  const c = emptyCounts();
+  acts.forEach((a) => { if (c[a.result] === undefined) return; c[a.result] += 1; c.tot += 1; });
+  const d = derive(c);
+  const pts = acts.filter((a) => a.result === "#" && ["Attacco", "Battuta", "Muro"].includes(a.skill)).length;
+  let soN = 0, soW = 0, bpN = 0, bpW = 0, w = 0;
+  rs.forEach((r) => { if (r.won) w++; if (r.serving) { bpN++; if (r.won) bpW++; } else { soN++; if (r.won) soW++; } });
+  return { tot: c.tot, pos: d.pos, eff: d.eff, err: c["="], pts, so: pct(soW, soN), bp: pct(bpW, bpN), soN, soW, bpN, bpW, rn: rs.length, rw: w, rl: rs.length - w };
+}
+
+/* Analisi completa di una partita (corrente o d'archivio) per i trend */
+function analyzeMatch(m, fbRoster) {
+  const d = m.data || {};
+  const acts = Array.isArray(d.actions) ? d.actions : [];
+  const rs = Array.isArray(d.rallies) ? d.rallies : [];
+  const ros = Array.isArray(d.roster) && d.roster.length ? d.roster : fbRoster;
+  const team = teamKpi(acts, rs, "all");
+  const kp = computeKpi(rs, acts, "all");
+  const ps = fullStats(ros, computeStats(acts, "all"), kp);
+  const pl = {};
+  ps.forEach((p) => {
+    const v = playerKpi(p, kp.pl[p.key], "all");
+    const rep = (d.reports || {})[p.key];
+    pl[p.key] = {
+      key: p.key, number: p.number, name: p.name, role: p.role, setter: v.setter,
+      played: p.total.tot > 0 || v.n > 0,
+      voto: rep && typeof rep.voto === "number" ? rep.voto : null,
+      pos: p.total.pos, eff: p.total.eff, main: v.setter ? v.qr : v.tpi,
+      pps: parseFloat(v.pps), err: p.total["="],
+    };
+  });
+  return { id: m.id, name: m.name, date: m.date, team, pl };
+}
+const matchSig = (d) => {
+  const a = (d && d.actions) || [], r = (d && d.rallies) || [];
+  return a.length + ":" + r.length + ":" + (a.length ? a[a.length - 1].id : 0) + ":" + (r.length ? r[r.length - 1].id : 0);
+};
+const shortDate = (iso) => { try { return new Date(iso).toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit" }); } catch (e) { return ""; } };
+const mean = (arr) => { const x = arr.filter((v) => v !== null && v !== undefined && !isNaN(v)); return x.length ? x.reduce((s, v) => s + v, 0) / x.length : null; };
+
+function AnalysisDashboard({ actions, rallies, roster, reports, archive, game }) {
+  const [view, setView] = useAn("view", "match");
+  const [setSel, setSetSel] = useAn("set", "all");
+  const [plSel, setPlSel] = useAn("player", "all");
+  const [sortK, setSortK] = useAn("sortK", "number");
+  const [sortDir, setSortDir] = useAn("sortDir", 1);
+  const [trSel, setTrSel] = useAn("trSel", "all");
+  const [trPlayer, setTrPlayer] = useAn("trPlayer", "");
+  const [trMetric, setTrMetric] = useAn("trMetric", "pos");
+
+  /* --- dati partita corrente filtrati per set --- */
+  const aStats = React.useMemo(() => computeStats(actions, setSel), [actions, setSel]);
+  const aKpi = React.useMemo(() => computeKpi(rallies, actions, setSel), [rallies, actions, setSel]);
+  const aPs = React.useMemo(() => fullStats(roster, aStats, aKpi), [roster, aStats, aKpi]);
+  const team = React.useMemo(() => teamKpi(actions, rallies, setSel), [actions, rallies, setSel]);
+  const setsInfo = [1, 2, 3, 4, 5].map((n) => {
+    const rs = rallies.filter((r) => (r.set || 1) === n);
+    const w = rs.filter((r) => r.won).length;
+    return { n, rn: rs.length, w, l: rs.length - w, na: actions.filter((a) => (a.set || 1) === n).length };
+  });
+
+  /* --- elenco partite per i trend (archivio + corrente, ordine cronologico) --- */
+  const matchInfo = React.useMemo(() => {
+    const arch = archive.map((it, i) => ({ id: "a" + it.id, name: it.name || "Partita", date: it.date, data: it.data || {}, ord: isNaN(new Date(it.date).getTime()) ? i : new Date(it.date).getTime() }));
+    arch.sort((a, b) => a.ord - b.ord);
+    const curHas = actions.length > 0 || rallies.length > 0;
+    const curData = { actions, rallies, roster, reports, game };
+    const dup = curHas && arch.some((m) => matchSig(m.data) === matchSig(curData));
+    const list = arch.slice();
+    if (curHas && !dup) list.push({ id: "cur", name: "Partita corrente", date: new Date().toISOString(), data: curData });
+    return { list: list.map((m) => analyzeMatch(m, roster)), dup };
+  }, [archive, actions, rallies, roster, reports, game]);
+  const perMatch = matchInfo.list;
+
+  const viewBtn = (k, lbl) => (
+    <button key={k} onClick={() => setView(k)} className={"rounded-full px-4 py-2 text-sm font-bold " + (view === k ? "bg-orange-500 text-slate-950" : "bg-slate-800 text-slate-200 hover:bg-slate-700")}>{lbl}</button>
+  );
+
+  const head = (
+    <div className="flex flex-wrap items-center gap-2">
+      {viewBtn("match", "📊 Partita corrente")}
+      {viewBtn("trend", "📈 Confronto Partite & Trend")}
+    </div>
+  );
+
+  /* ========== VISTA 1: PARTITA CORRENTE ========== */
+  if (view === "match") {
+    const hasData = team.tot > 0 || team.rn > 0;
+    const rows = [1, 2, 3, 4, 5, 6].map((i) => ({ idx: i, ...aKpi.rot[i] }));
+    const live = rows.filter((r) => r.w + r.l > 0);
+    const sal = (r) => r.w - r.l;
+    const score = (r) => sal(r) * 1000 + (pct(r.soW, r.soN) || 0) + (pct(r.bpW, r.bpN) || 0);
+    const best = live.length > 1 ? live.reduce((a, b) => (score(b) > score(a) ? b : a)) : null;
+    const worst = live.length > 1 ? live.reduce((a, b) => (score(b) < score(a) ? b : a)) : null;
+    const showBadges = best && worst && best.idx !== worst.idx;
+    const maxAbs = Math.max(1, ...rows.map((r) => Math.abs(sal(r))));
+
+    const pRows = aPs.map((p) => ({ p, v: playerKpi(p, aKpi.pl[p.key], setSel) }));
+    const sortVal = (row) => {
+      const p = row.p, v = row.v;
+      if (sortK === "n") return v.n;
+      if (sortK === "main") return v.setter ? v.qr : v.tpi;
+      if (sortK === "net") return v.net;
+      if (sortK === "pos") return p.total.pos;
+      if (sortK === "eff") return p.total.eff;
+      if (sortK === "err") return p.total["="];
+      return p.number;
+    };
+    const sorted = pRows.slice().sort((a, b) => {
+      const x = sortVal(a), y = sortVal(b);
+      const xn = x === null || x === undefined, yn = y === null || y === undefined;
+      if (xn && yn) return 0;
+      if (xn) return 1;
+      if (yn) return -1;
+      return sortDir * (x - y);
+    });
+    const toggleSort = (k) => { if (sortK === k) setSortDir(-sortDir); else { setSortK(k); setSortDir(k === "number" ? 1 : -1); } };
+    const arrow = (k) => (sortK === k ? (sortDir > 0 ? " ▲" : " ▼") : "");
+    const thB = (k, lbl, left) => (<th className={"p-2 " + (left ? "text-left" : "text-right")}><button onClick={() => toggleSort(k)} className={"font-semibold hover:text-orange-300 " + (sortK === k ? "text-orange-300" : "")}>{lbl}{arrow(k)}</button></th>);
+    const curRow = pRows.find((r) => r.p.key === plSel) || null;
+
+    return (
+      <section className="mx-auto max-w-[1500px] space-y-4 p-4">
+        {head}
+
+        {/* Filtro per set */}
+        <div className={cardCls}>
+          <h2 className="mb-2 text-sm font-bold uppercase tracking-wide text-slate-400">Filtra per set</h2>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => setSetSel("all")} className={"rounded-full px-4 py-2 text-sm font-bold " + (setSel === "all" ? "bg-orange-500 text-slate-950" : "bg-slate-800 text-slate-200 hover:bg-slate-700")}>Tutti i Set</button>
+            {setsInfo.map((s) => {
+              const on = setSel === s.n;
+              const dis = s.rn === 0 && s.na === 0;
+              return (
+                <button key={s.n} onClick={() => setSetSel(s.n)} className={"flex items-center gap-1 rounded-full px-4 py-2 text-sm font-bold " + (on ? "bg-orange-500 text-slate-950" : dis ? "bg-slate-800/60 text-slate-500 hover:bg-slate-800" : "bg-slate-800 text-slate-200 hover:bg-slate-700")}>
+                  <span>Set {s.n}</span>
+                  {s.rn > 0 && <span className={on ? "text-slate-900" : s.w > s.l ? "text-emerald-400" : s.w < s.l ? "text-rose-400" : "text-slate-300"}>({s.w}-{s.l})</span>}
+                  {s.n === game.set && <span title="Set in corso" className="ml-0.5 inline-block h-2 w-2 rounded-full bg-amber-400" />}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-2 text-xs text-slate-400">Il parziale è calcolato dagli scambi registrati (Noi–Avversari). Il pallino giallo indica il set in corso. Tutti i numeri sotto si aggiornano sul filtro scelto.</p>
+        </div>
+
+        {!hasData && (
+          <p className="rounded-xl bg-slate-900 p-6 text-center text-slate-400">{setSel === "all" ? "Nessun dato ancora: tagga qualche azione e chiudi qualche scambio nella scheda Scouting." : "Nessun dato registrato per il Set " + setSel + "."}</p>
+        )}
+
+        {hasData && (<>
+          {/* Card KPI squadra */}
+          <div>
+            <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
+              <h2 className="text-lg font-bold">Riepilogo squadra · {setSel === "all" ? "tutta la partita" : "Set " + setSel}</h2>
+              <span className="text-xs text-slate-400">{team.tot} tocchi · {team.rn} scambi ({team.rw} vinti – {team.rl} persi)</span>
+            </div>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+              <KpiCard icon="👍" label="Positività" value={pctTxt(team.pos)} bar={team.pos} kind="pos" hint="Azioni # e + sul totale: quante palle giocate bene." />
+              <KpiCard icon="⚡" label="Efficienza" value={pctTxt(team.eff)} bar={team.eff} kind="eff" hint="(# − = − ½·/) ÷ totale: premia i punti, penalizza errori e murati." />
+              <KpiCard icon="🛡️" label="Side-Out" value={pctTxt(team.so)} bar={team.so} kind="so" hint={"Scambi vinti in ricezione" + (team.soN ? " (" + team.soW + "/" + team.soN + ")." : ".")} />
+              <KpiCard icon="🎯" label="Break Point" value={pctTxt(team.bp)} bar={team.bp} kind="bp" hint={"Scambi vinti in battuta" + (team.bpN ? " (" + team.bpW + "/" + team.bpN + ")." : ".")} />
+              <KpiCard icon="❌" label="Errori diretti (=)" value={team.err} bar={pct(team.err, team.tot)} tone={team.err === 0 ? "emerald" : "rose"} hint={(pct(team.err, team.tot) || 0) + "% dei tocchi: ogni errore regala un punto."} />
+              <KpiCard icon="🏐" label="Punti diretti (#)" value={team.pts} bar={pct(team.pts, team.tot)} tone="emerald" hint={"Punti in attacco, battuta e muro (" + (pct(team.pts, team.tot) || 0) + "% dei tocchi)."} />
+            </div>
+            <p className="mt-2 text-xs text-slate-500">Colori: verde ottimo · azzurro buono · giallo da migliorare · rosso critico (soglie indicative).</p>
+          </div>
+
+          {/* Rotazioni */}
+          <div className={cardCls}>
+            <h2 className="mb-3 text-lg font-bold">Rotazioni P1–P6</h2>
+            <div className="grid gap-3 lg:grid-cols-2">
+              {rows.map((r) => {
+                const n = r.w + r.l, s = sal(r), so = pct(r.soW, r.soN), bp = pct(r.bpW, r.bpN);
+                const isBest = showBadges && r.idx === best.idx, isWorst = showBadges && r.idx === worst.idx;
+                return (
+                  <div key={r.idx} className={"rounded-xl border p-3 " + (isBest ? "border-emerald-500/60 bg-emerald-950/30" : isWorst ? "border-rose-500/60 bg-rose-950/30" : "border-slate-800 bg-slate-950/40")}>
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <span className="text-lg font-black">P{r.idx}</span>
+                      {isBest && <span className="rounded-full bg-emerald-500 px-2 py-0.5 text-xs font-bold text-emerald-950">🏆 Più forte</span>}
+                      {isWorst && <span className="rounded-full bg-rose-500 px-2 py-0.5 text-xs font-bold text-rose-950">⚠️ Più critica</span>}
+                      <span className="ml-auto text-xs text-slate-400">{n ? n + " scambi · " + r.w + "–" + r.l : "nessuno scambio"}</span>
+                    </div>
+                    {n === 0 ? (<p className="text-xs text-slate-500">Nessun dato per questa rotazione.</p>) : (
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <div>
+                          <div className="mb-1 flex items-baseline justify-between text-xs"><span className="font-semibold text-slate-300">Side-Out</span><span className={"font-bold tabular-nums " + TONE[toneOf(so, "so")].text}>{pctTxt(so)}</span></div>
+                          <Bar v={so} kind="so" />
+                          <div className="mt-1 text-[10px] text-slate-500">{r.soN ? r.soW + "/" + r.soN + " in ricezione" : "–"}</div>
+                        </div>
+                        <div>
+                          <div className="mb-1 flex items-baseline justify-between text-xs"><span className="font-semibold text-slate-300">Break Point</span><span className={"font-bold tabular-nums " + TONE[toneOf(bp, "bp")].text}>{pctTxt(bp)}</span></div>
+                          <Bar v={bp} kind="bp" />
+                          <div className="mt-1 text-[10px] text-slate-500">{r.bpN ? r.bpW + "/" + r.bpN + " al servizio" : "–"}</div>
+                        </div>
+                        <div>
+                          <div className="mb-1 flex items-baseline justify-between text-xs"><span className="font-semibold text-slate-300">Saldo ±</span><span className={"font-bold tabular-nums " + (s > 0 ? "text-emerald-400" : s < 0 ? "text-rose-400" : "text-slate-400")}>{sgn(s)}</span></div>
+                          <div className="relative h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
+                            <div className="absolute left-1/2 top-0 h-full w-px bg-slate-500" />
+                            {s > 0 && <div className="absolute top-0 h-full rounded-r-full bg-emerald-500" style={{ left: "50%", width: (s / maxAbs) * 50 + "%" }} />}
+                            {s < 0 && <div className="absolute top-0 h-full rounded-l-full bg-rose-500" style={{ right: "50%", width: (-s / maxAbs) * 50 + "%" }} />}
+                          </div>
+                          <div className="mt-1 text-[10px] text-slate-500">{r.w} fatti · {r.l} subiti</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <details className="mt-3 rounded-lg bg-slate-950/40 p-2">
+              <summary className="cursor-pointer text-sm font-semibold text-slate-300">Mostra tabella rotazioni</summary>
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full min-w-[520px] text-sm tabular-nums">
+                  <thead className="text-slate-400"><tr><th className="p-2 text-left">Rot.</th><th className="p-2 text-right">Scambi</th><th className="p-2 text-right">Punti fatti</th><th className="p-2 text-right">Punti subiti</th><th className="p-2 text-right">Saldo ±</th><th className="p-2 text-right">Side-Out %</th><th className="p-2 text-right">Break Point %</th></tr></thead>
+                  <tbody>{rows.map((r) => (
+                    <tr key={r.idx} className={"border-t border-slate-800 text-right " + (showBadges && r.idx === best.idx ? "bg-emerald-950/50" : "") + (showBadges && r.idx === worst.idx ? "bg-rose-950/50" : "")}>
+                      <td className="p-2 text-left font-bold">P{r.idx}{showBadges && r.idx === best.idx ? " 🏆" : ""}{showBadges && r.idx === worst.idx ? " ⚠️" : ""}</td>
+                      <td className="p-2">{r.w + r.l}</td><td className="p-2">{r.w}</td><td className="p-2">{r.l}</td><td className="p-2 font-bold">{sgn(sal(r))}</td>
+                      <td className="p-2">{pctTxt(pct(r.soW, r.soN))}</td><td className="p-2">{pctTxt(pct(r.bpW, r.bpN))}</td>
+                    </tr>))}</tbody>
+                </table>
+              </div>
+            </details>
+            <p className="mt-2 text-xs text-slate-400">Side-Out: scambi vinti quando si riceve. Break Point: scambi vinti quando si serve. Saldo ±: punti fatti meno subiti. Più forte / più critica = saldo più alto / più basso (a parità conta la somma di Side-Out e Break Point).</p>
+          </div>
+
+          {/* Giocatori */}
+          <div className={cardCls}>
+            <h2 className="mb-3 text-lg font-bold">Giocatori</h2>
+            <div className="mb-3 flex flex-wrap gap-2">
+              <button onClick={() => setPlSel("all")} className={"rounded-full px-3 py-1.5 text-sm font-semibold " + (!curRow ? "bg-orange-500 text-slate-950" : "bg-slate-800 hover:bg-slate-700")}>Tutti</button>
+              {aPs.map((p) => (
+                <button key={p.key} onClick={() => setPlSel(p.key)} className={"rounded-full px-3 py-1.5 text-sm font-semibold " + (curRow && curRow.p.key === p.key ? "bg-orange-500 text-slate-950" : "bg-slate-800 hover:bg-slate-700")}>{p.number} {p.name}</button>
+              ))}
+            </div>
+
+            {!curRow && (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[720px] text-sm tabular-nums">
+                  <thead className="text-xs text-slate-400"><tr>{thB("number", "Giocatore", true)}{thB("n", "Scambi")}{thB("main", "TPI / Regia")}{thB("net", "Saldo ±")}{thB("pos", "Pos %")}{thB("eff", "Eff %")}{thB("err", "Err =")}</tr></thead>
+                  <tbody>{sorted.map(({ p, v }) => {
+                    const main = v.setter ? v.qr : v.tpi;
+                    return (
+                      <tr key={p.key} onClick={() => setPlSel(p.key)} className="cursor-pointer border-t border-slate-800 text-right hover:bg-slate-800/60">
+                        <td className="p-2 text-left"><span className="font-bold text-orange-300">{p.number}</span> <span className="font-semibold">{p.name}</span> <span className="text-[10px] text-slate-500">{p.role}</span></td>
+                        <td className="p-2">{v.n}</td>
+                        <td className="p-2"><div className="flex items-center justify-end gap-2"><span className={TONE[toneOf(main, v.setter ? "pos" : "tpi")].text}>{pctTxt(main)}{v.setter && <span className="ml-1 text-[10px] text-slate-500">Regia</span>}</span><div className="w-14"><Bar v={main} kind={v.setter ? "pos" : "tpi"} h="h-2" /></div></div></td>
+                        <td className={"p-2 font-bold " + (v.net > 0 ? "text-emerald-400" : v.net < 0 ? "text-rose-400" : "text-slate-400")}>{sgn(v.net)}</td>
+                        <td className="p-2"><div className="flex items-center justify-end gap-2"><span className={TONE[toneOf(p.total.pos, "pos")].text}>{pctTxt(p.total.pos)}</span><div className="w-14"><Bar v={p.total.pos} kind="pos" h="h-2" /></div></div></td>
+                        <td className="p-2"><div className="flex items-center justify-end gap-2"><span className={TONE[toneOf(p.total.eff, "eff")].text}>{pctTxt(p.total.eff)}</span><div className="w-14"><Bar v={p.total.eff} kind="eff" h="h-2" /></div></div></td>
+                        <td className={"p-2 " + (p.total["="] > 0 ? "text-rose-400" : "text-slate-400")}>{p.total["="]}</td>
+                      </tr>
+                    );
+                  })}</tbody>
+                </table>
+                <p className="mt-2 text-xs text-slate-400">Tocca un giocatore (o il titolo di una colonna per ordinare) per vedere il dettaglio per fondamentale. Il Palleggiatore non ha TPI: al suo posto la Qualità Regia (alzate # e +).</p>
+              </div>
+            )}
+
+            {curRow && (() => {
+              const { p, v } = curRow;
+              const tiles = [];
+              if (v.setter) {
+                tiles.push({ l: "Qualità Regia", val: pctTxt(v.qr), bar: v.qr, kind: "pos", hint: "Alzate # e + sul totale alzate." });
+                tiles.push({ l: "Conversione su Alzata", val: pctTxt(v.conv), bar: v.conv, kind: "conv", hint: "Scambi vinti dopo una sua alzata # o +." });
+              } else {
+                tiles.push({ l: "TPI", val: pctTxt(v.tpi), bar: v.tpi, kind: "tpi", hint: "Scambi vinti +1, persi con suo = −1, con suo / −½." });
+              }
+              tiles.push({ l: "Saldo ±", val: sgn(v.net), tone: v.net > 0 ? "emerald" : v.net < 0 ? "rose" : "slate", hint: "Scambi vinti meno persi con lui in campo." });
+              tiles.push({ l: "Ball Retention", val: pctTxt(v.ret), bar: v.ret, kind: "ret", hint: "Tocchi senza errore diretto." });
+              tiles.push({ l: "Punti / Set", val: v.pps, tone: "sky", hint: "Punti # tra attacco, battuta e muro per set." });
+              tiles.push({ l: "Resilienza", val: pctTxt(v.res), bar: v.res, kind: "res", hint: "Azioni # o + subito dopo un = o un −." });
+              tiles.push({ l: "Minutaggio", val: v.n, tone: "slate", hint: "Scambi in campo (≈ " + v.setEq + " set eq.)." });
+              return (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-slate-800 text-3xl font-extrabold text-orange-300">{p.number}</div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xl font-bold">{p.name}</div>
+                      <div className="text-sm text-slate-400">{p.role} · {p.total.tot} tocchi · Pos {pctTxt(p.total.pos)} · Eff {pctTxt(p.total.eff)}{reports[p.key] ? " · Voto " + reports[p.key].voto.toFixed(1) : ""}</div>
+                    </div>
+                    <button onClick={() => setPlSel("all")} className="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold hover:bg-slate-700">← Tutti</button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    {tiles.map((t) => (<KpiCard key={t.l} label={t.l} value={t.val} bar={t.bar} kind={t.kind} tone={t.tone} hint={t.hint} />))}
+                  </div>
+                  <div>
+                    <h3 className="mb-2 text-sm font-bold uppercase tracking-wide text-slate-400">Dettaglio per fondamentale</h3>
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      {SKILLS.map((sk) => {
+                        const s = p.skills.find((x) => x.skill === sk);
+                        if (!s) return (
+                          <div key={sk} className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 opacity-60"><div className="font-bold">{sk}</div><div className="text-xs text-slate-500">Nessuna azione taggata.</div></div>
+                        );
+                        return (
+                          <div key={sk} className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+                            <div className="mb-2 flex items-baseline justify-between"><span className="font-bold">{sk}</span><span className="text-xs text-slate-400">{s.tot} tocchi</span></div>
+                            <div className="flex h-3 w-full overflow-hidden rounded-full bg-slate-800">
+                              {DIST.map(([k, c]) => (s[k] > 0 ? <div key={k} className={c} style={{ width: (s[k] / s.tot) * 100 + "%" }} title={k + " " + s[k]} /> : null))}
+                            </div>
+                            <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] font-semibold tabular-nums">
+                              {DIST.map(([k]) => (<span key={k} className={RESULT_TEXT[k]}>{k} {s[k]}</span>))}
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 gap-3">
+                              <div><div className="mb-1 flex justify-between text-xs"><span className="text-slate-400">Positività</span><b className={TONE[toneOf(s.pos, "pos")].text}>{pctTxt(s.pos)}</b></div><Bar v={s.pos} kind="pos" /></div>
+                              <div><div className="mb-1 flex justify-between text-xs"><span className="text-slate-400">Efficienza</span><b className={TONE[toneOf(s.eff, "eff")].text}>{pctTxt(s.eff)}</b></div><Bar v={s.eff} kind="eff" /></div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">Barra a colori: # punto/perfetta · + positiva · − negativa · / murato o merito avversario (non è errore) · = errore.</p>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </>)}
+      </section>
+    );
+  }
+
+  /* ========== VISTA 2: CONFRONTO PARTITE & TREND ========== */
+  const allIds = perMatch.map((m) => m.id);
+  const selIds = trSel === "all" ? allIds : trSel.filter((id) => allIds.includes(id));
+  const chosen = perMatch.filter((m) => selIds.includes(m.id));
+  const toggleMatch = (id) => setTrSel((cur) => { const base = cur === "all" ? allIds : cur; return base.includes(id) ? base.filter((x) => x !== id) : base.concat([id]); });
+  const manyLbl = chosen.length > 5;
+  const labels = chosen.map((m, i) => (manyLbl ? String(i + 1) : (m.name.length > 12 ? m.name.slice(0, 11) + "…" : m.name)));
+  const col = (f) => chosen.map((m) => f(m.team));
+  const tRows = [
+    { k: "pos", l: "Positività %", c: "#38bdf8" },
+    { k: "eff", l: "Efficienza %", c: "#a78bfa" },
+    { k: "so", l: "Side-Out %", c: "#34d399" },
+    { k: "bp", l: "Break Point %", c: "#fbbf24" },
+  ];
+
+  /* giocatori disponibili: tutti quelli che hanno giocato in almeno una partita */
+  const plMap = {};
+  perMatch.forEach((m) => Object.keys(m.pl).forEach((k) => { if (m.pl[k].played) plMap[k] = { key: k, number: m.pl[k].number, name: m.pl[k].name, setter: m.pl[k].setter }; }));
+  const plList = Object.keys(plMap).map((k) => plMap[k]).sort((a, b) => a.number - b.number);
+  const trKey = plMap[trPlayer] ? trPlayer : (plList[0] ? plList[0].key : "");
+  const isSet = trKey && plMap[trKey].setter;
+  const mainLbl = isSet ? "Qualità Regia %" : "TPI %";
+  const PM = [
+    { k: "voto", l: "Voto", dec: 1, mode: "grade", inv: false },
+    { k: "pos", l: "Positività %", dec: 0, mode: "pct", inv: false },
+    { k: "eff", l: "Efficienza %", dec: 0, mode: "pct", inv: false },
+    { k: "main", l: mainLbl, dec: 0, mode: "pct", inv: false },
+    { k: "pps", l: "Punti/Set", dec: 1, mode: "auto0", inv: false },
+    { k: "err", l: "Errori (=)", dec: 0, mode: "auto0", inv: true },
+  ];
+  const metric = PM.find((x) => x.k === trMetric) || PM[1];
+  const rowOfP = (m) => { const r = m.pl[trKey]; return r && r.played ? r : null; };
+  const seasonAvg = {};
+  PM.forEach((x) => { seasonAvg[x.k] = mean(perMatch.map((m) => { const r = rowOfP(m); return r ? r[x.k] : null; })); });
+  const nSeason = perMatch.filter((m) => rowOfP(m)).length;
+  const fmtV = (v, dec) => (v === null || v === undefined || isNaN(v) ? "–" : Number(v).toFixed(dec));
+  const tdc = "p-2 text-right";
+
+  return (
+    <section className="mx-auto max-w-[1500px] space-y-4 p-4">
+      {head}
+
+      {/* Selettore partite */}
+      <div className={cardCls}>
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <h2 className="mr-auto text-lg font-bold">📈 Confronto Partite &amp; Trend</h2>
+          <button onClick={() => setTrSel("all")} className={"rounded-full px-3 py-1.5 text-sm font-semibold " + (trSel === "all" ? "bg-orange-500 text-slate-950" : "bg-slate-800 hover:bg-slate-700")}>Tutte le partite salvate</button>
+          <button onClick={() => setTrSel([])} className="rounded-full bg-slate-800 px-3 py-1.5 text-sm font-semibold hover:bg-slate-700">Nessuna</button>
+        </div>
+        {perMatch.length === 0 && <p className="rounded-lg bg-slate-950/40 p-4 text-center text-sm text-slate-400">Nessuna partita disponibile: salva una partita in Archivio Stagione (o tagga la partita corrente) per vedere i trend.</p>}
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {perMatch.map((m, i) => {
+            const on = selIds.includes(m.id);
+            return (
+              <label key={m.id} className={"flex cursor-pointer items-center gap-3 rounded-lg border p-2 " + (on ? "border-orange-500/70 bg-orange-500/10" : "border-slate-800 bg-slate-950/40")}>
+                <input type="checkbox" checked={on} onChange={() => toggleMatch(m.id)} className="h-4 w-4 accent-orange-500" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-semibold">{m.name}</div>
+                  <div className="text-[11px] text-slate-400">{m.id === "cur" ? "in corso" : shortDate(m.date)} · {m.team.tot} tocchi · {m.team.rn} scambi</div>
+                </div>
+                <span className="text-xs text-slate-500">#{i + 1}</span>
+              </label>
+            );
+          })}
+        </div>
+        {matchInfo.dup && <p className="mt-2 text-xs text-slate-400">La partita corrente è già salvata in archivio: non viene contata due volte.</p>}
+        <p className="mt-2 text-xs text-slate-400">Ordine cronologico: dalla più vecchia alla più recente (la partita corrente, se non ancora archiviata, è l'ultima). I dati arrivano dall'Archivio Stagione, anche quello sincronizzato dal Cloud.</p>
+      </div>
+
+      {chosen.length === 0 && perMatch.length > 0 && <p className="rounded-xl bg-slate-900 p-6 text-center text-slate-400">Spunta almeno una partita per vedere i dati.</p>}
+
+      {chosen.length > 0 && (<>
+        <div className={cardCls}>
+          <h3 className="mb-2 text-lg font-bold">Trend di squadra</h3>
+          {chosen.length < 2 && <p className="mb-2 rounded-lg bg-slate-950/40 p-2 text-xs text-amber-300">Seleziona almeno 2 partite per vedere l'andamento nel tempo.</p>}
+          <div className="grid gap-4 xl:grid-cols-3">
+            <div className="xl:col-span-2">
+              <LineChart labels={labels} mode="pct" series={tRows.map((r) => ({ name: r.l, color: r.c, values: col((t) => t[r.k]) }))} />
+            </div>
+            <div>
+              <div className="mb-1 text-center text-xs font-semibold text-slate-400">Errori diretti (=)</div>
+              <LineChart labels={labels} mode="auto0" series={[{ name: "Errori diretti", color: "#fb7185", values: col((t) => t.err) }]} />
+            </div>
+          </div>
+          {manyLbl && (
+            <p className="mt-2 text-xs text-slate-400">{chosen.map((m, i) => (i + 1) + " = " + m.name).join(" · ")}</p>
+          )}
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[640px] text-sm tabular-nums">
+              <thead className="text-xs text-slate-400"><tr><th className="p-2 text-left">Partita</th><th className={tdc}>Scambi</th><th className={tdc}>Pos %</th><th className={tdc}>Eff %</th><th className={tdc}>Side-Out %</th><th className={tdc}>Break Pt %</th><th className={tdc}>Err =</th></tr></thead>
+              <tbody>{chosen.map((m, i) => {
+                const pv = i > 0 ? chosen[i - 1].team : null, t = m.team;
+                const dl = (k) => (pv && t[k] !== null && pv[k] !== null ? t[k] - pv[k] : null);
+                return (
+                  <tr key={m.id} className="border-t border-slate-800">
+                    <td className="p-2 text-left font-semibold">{i + 1}. {m.name} <span className="text-[11px] font-normal text-slate-500">{m.id === "cur" ? "" : shortDate(m.date)}</span></td>
+                    <td className={tdc}>{t.rn}</td>
+                    <td className={tdc}><span className={TONE[toneOf(t.pos, "pos")].text}>{pctTxt(t.pos)}</span><Delta d={dl("pos")} /></td>
+                    <td className={tdc}><span className={TONE[toneOf(t.eff, "eff")].text}>{pctTxt(t.eff)}</span><Delta d={dl("eff")} /></td>
+                    <td className={tdc}><span className={TONE[toneOf(t.so, "so")].text}>{pctTxt(t.so)}</span><Delta d={dl("so")} /></td>
+                    <td className={tdc}><span className={TONE[toneOf(t.bp, "bp")].text}>{pctTxt(t.bp)}</span><Delta d={dl("bp")} /></td>
+                    <td className={tdc}>{t.err}<Delta d={dl("err")} inv /></td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
+            <p className="mt-2 text-xs text-slate-500">I numeri piccoli accanto ai valori sono la variazione rispetto alla partita precedente (verde = miglioramento, rosso = peggioramento; per gli errori meno è meglio).</p>
+          </div>
+        </div>
+
+        <div className={cardCls}>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <h3 className="mr-auto text-lg font-bold">Crescita individuale</h3>
+            <select value={trKey} onChange={(e) => setTrPlayer(e.target.value)} className="rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-orange-400">
+              {plList.length === 0 && <option value="">Nessun giocatore</option>}
+              {plList.map((p) => (<option key={p.key} value={p.key}>{p.number} · {p.name}</option>))}
+            </select>
+          </div>
+          {!trKey && <p className="text-sm text-slate-400">Nessun giocatore con dati nelle partite disponibili.</p>}
+          {trKey && (<>
+            <div className="mb-3 flex flex-wrap gap-2">
+              {PM.map((x) => (<button key={x.k} onClick={() => setTrMetric(x.k)} className={"rounded-full px-3 py-1.5 text-sm font-semibold " + (metric.k === x.k ? "bg-orange-500 text-slate-950" : "bg-slate-800 hover:bg-slate-700")}>{x.l}</button>))}
+            </div>
+            {chosen.length < 2 && <p className="mb-2 rounded-lg bg-slate-950/40 p-2 text-xs text-amber-300">Seleziona almeno 2 partite per vedere la curva di crescita.</p>}
+            <LineChart labels={labels} mode={metric.mode} avg={seasonAvg[metric.k]} series={[{ name: metric.l, color: "#fb923c", values: chosen.map((m) => { const r = rowOfP(m); return r ? r[metric.k] : null; }) }]} />
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[680px] text-sm tabular-nums">
+                <thead className="text-xs text-slate-400"><tr><th className="p-2 text-left">Partita</th><th className={tdc}>Voto</th><th className={tdc}>Pos %</th><th className={tdc}>Eff %</th><th className={tdc}>{mainLbl}</th><th className={tdc}>Punti/Set</th><th className={tdc}>Err =</th></tr></thead>
+                <tbody>
+                  {chosen.map((m, i) => {
+                    const r = rowOfP(m);
+                    return (
+                      <tr key={m.id} className="border-t border-slate-800">
+                        <td className="p-2 text-left font-semibold">{i + 1}. {m.name}</td>
+                        {!r && <td className="p-2 text-right text-xs text-slate-500" colSpan={6}>non in campo / nessun dato</td>}
+                        {r && PM.map((x) => (
+                          <td key={x.k} className={tdc}>{fmtV(r[x.k], x.dec)}<Delta d={r[x.k] !== null && seasonAvg[x.k] !== null ? r[x.k] - seasonAvg[x.k] : null} dec={x.dec} inv={x.inv} /></td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                  <tr className="border-t-2 border-slate-600 bg-slate-950/40 font-bold">
+                    <td className="p-2 text-left text-orange-300">Media stagione ({nSeason})</td>
+                    {PM.map((x) => (<td key={x.k} className={tdc}>{fmtV(seasonAvg[x.k], x.dec)}</td>))}
+                  </tr>
+                </tbody>
+              </table>
+              <p className="mt-2 text-xs text-slate-500">Il delta (+ / −) è rispetto alla media stagionale del giocatore, calcolata sulle {nSeason} partite disponibili in cui è sceso in campo. Il Voto compare solo per le partite con pagella generata. Per il Palleggiatore la colonna è la Qualità Regia, per gli altri il TPI.</p>
+            </div>
+          </>)}
+        </div>
+      </>)}
+    </section>
   );
 }
 
@@ -1237,7 +1857,7 @@ function VolleyScout() {
       </header>
 
       <nav className="mx-auto flex max-w-[1500px] gap-2 overflow-x-auto px-4 pt-3">
-        {[["scout", "🎬 Scouting & Pagelle"], ["kpi", "📊 KPI & Rotazioni"], ["arch", "🗂️ Archivio"]].map(([k, l]) => (
+        {[["scout", "🎬 Scouting & Pagelle"], ["kpi", "📊 Analisi & Trend"], ["arch", "🗂️ Archivio"]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} className={`shrink-0 rounded-full px-4 py-2 text-sm font-semibold ${tab === k ? "bg-orange-500 text-slate-950" : "bg-slate-800"}`}>{l}</button>
         ))}
       </nav>
@@ -1675,43 +2295,7 @@ function VolleyScout() {
         )}
       </section>
       </>)}
-      {tab === "kpi" && (() => {
-        const rows = [1, 2, 3, 4, 5, 6].map((n) => ({ n, ...kpiData.rot[n] })).filter((r) => r.n >= 0);
-        const live = rows.filter((r) => r.n > 0 || r.w + r.l > 0);
-        const sal = (r) => r.w - r.l;
-        const best = live.length ? live.reduce((a, b) => (sal(b) > sal(a) ? b : a)) : null;
-        const worst = live.length ? live.reduce((a, b) => (sal(b) < sal(a) ? b : a)) : null;
-        const th = "p-2 text-right";
-        return (
-          <section className="mx-auto max-w-[1500px] space-y-4 p-4">
-            <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <h2 className="mb-2 text-lg font-bold">Rotazioni P1–P6</h2>
-              <table className="w-full min-w-[520px] text-sm tabular-nums">
-                <thead className="text-slate-400"><tr><th className="p-2 text-left">Rot.</th><th className={th}>Scambi</th><th className={th}>Punti fatti</th><th className={th}>Punti subiti</th><th className={th}>Saldo ±</th><th className={th}>Side-Out %</th><th className={th}>Break Point %</th></tr></thead>
-                <tbody>{rows.map((r) => (
-                  <tr key={r.n} className={`border-t border-slate-800 text-right ${best && r.n === best.n && sal(r) > 0 ? "bg-emerald-950/60" : ""} ${worst && r.n === worst.n && live.length > 1 ? "bg-rose-950/60" : ""}`}>
-                    <td className="p-2 text-left font-bold">P{r.n}{best && r.n === best.n && live.length > 1 ? " 🏆" : ""}{worst && r.n === worst.n && live.length > 1 ? " ⚠️" : ""}</td>
-                    <td className="p-2">{r.w + r.l}</td><td className="p-2">{r.w}</td><td className="p-2">{r.l}</td><td className="p-2 font-bold">{sal(r) > 0 ? "+" : ""}{sal(r)}</td>
-                    <td className="p-2">{pctTxt(pct(r.soW, r.soN))}</td><td className="p-2">{pctTxt(pct(r.bpW, r.bpN))}</td>
-                  </tr>))}</tbody>
-              </table>
-              <p className="mt-2 text-xs text-slate-400">🏆 rotazione migliore (saldo più alto) · ⚠️ più critica (saldo più basso). Side-Out: scambi vinti in ricezione. Break Point: scambi vinti al servizio.</p>
-            </div>
-            <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <h2 className="mb-2 text-lg font-bold">KPI individuali</h2>
-              <table className="w-full min-w-[820px] text-sm tabular-nums">
-                <thead className="text-slate-400"><tr><th className="p-2 text-left">Giocatore</th><th className={th}>Scambi</th><th className={th}>Set eq.</th><th className={th}>TPI %</th><th className={th}>Saldo ±</th><th className={th}>Ball Ret. %</th><th className={th}>PPS</th><th className={th}>Resil. %</th><th className={th}>Regia %</th><th className={th}>Conv. Alz. %</th></tr></thead>
-                <tbody>{ps.map((p) => { const v = kpiRow(p); return (
-                  <tr key={p.key} className="border-t border-slate-800 text-right">
-                    <td className="p-2 text-left font-semibold">{p.number} {p.name}</td><td className="p-2">{v.n}</td><td className="p-2">{v.setEq}</td><td className="p-2">{v.setter ? "N/A (Regia)" : pctTxt(v.tpi)}</td>
-                    <td className="p-2 font-bold">{v.net > 0 ? "+" : ""}{v.net}</td><td className="p-2">{pctTxt(v.ret)}</td><td className="p-2">{v.pps}</td><td className="p-2">{pctTxt(v.res)}</td><td className="p-2">{v.setter ? pctTxt(v.qr) : "–"}</td><td className="p-2">{v.setter ? pctTxt(v.conv) : "–"}</td>
-                  </tr>); })}</tbody>
-              </table>
-              <p className="mt-2 text-xs text-slate-400">TPI: scambi con tocco del giocatore, vinti = +1, persi con suo = −1, persi con suo / −0,5 (non calcolato per il Palleggiatore). Regia %: alzate # e + sul totale alzate. Conv. Alz.: % scambi chiusi a punto dopo una sua alzata # o +. Ball Retention: tocchi senza errore (= escluso, / non conta). PPS: punti (#) in attacco/battuta/muro per set. Resilienza: % di azioni # o + subito dopo un = o un - (i / sono ignorati). Set eq. = scambi / {SET_EQ}.</p>
-            </div>
-          </section>
-        );
-      })()}
+      {tab === "kpi" && <AnalysisDashboard actions={actions} rallies={rallies} roster={roster} reports={reports} archive={archive} game={game} />}
       {tab === "arch" && (
         <section className="mx-auto max-w-[1500px] space-y-3 p-4">
           <div className="flex flex-wrap gap-2">
