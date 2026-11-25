@@ -217,10 +217,11 @@ async function loadShortPayload(prefix, code) {
 function parseReportObj(d) {
   if (!d || typeof d !== "object") return { error: true };
   const actions = (Array.isArray(d.a) ? d.a : [])
-    .map((x, i) => ({ id: i, time: Math.max(0, Number(x[0]) || 0), skill: SKILLS[x[1]], result: x[2] }))
+    .map((x, i) => ({ id: i, time: Math.max(0, Number(x[0]) || 0), skill: SKILLS[x[1]], result: x[2], aiFlag: x[3] === 1 || x[3] === true }))
     .filter((a) => a.skill && RESULT_TEXT[a.result])
     .sort((a, b) => a.time - b.time);
   const vt = parseFloat(d.vt);
+  const sets = d.st && typeof d.st === "object" && !Array.isArray(d.st) ? d.st : {};
   return {
     number: d.n,
     name: String(d.nm || "Giocatore"),
@@ -228,6 +229,9 @@ function parseReportObj(d) {
     voto: isNaN(vt) ? null : vt,
     forza: String(d.f || ""),
     consiglio: String(d.c || ""),
+    bestSituation: String(d.bs || ""),
+    worstSituation: String(d.ws || ""),
+    sets,
     videoId: /^[\w-]{11}$/.test(d.vid || "") ? d.vid : null,
     actions,
   };
@@ -238,11 +242,14 @@ function parseMatchObj(d) {
   return {
     players: d.p.map((x, i) => {
       const vt = parseFloat(x.vt), k = Array.isArray(x.k) ? x.k : [];
+      const sets = x.st && typeof x.st === "object" && !Array.isArray(x.st) ? x.st : {};
       return {
         id: i, number: x.n, name: String(x.nm || "Giocatore"), role: String(x.r || ""), voto: isNaN(vt) ? null : vt,
-        forza: String(x.f || ""), consiglio: String(x.c || ""), videoId: vid,
+        forza: String(x.f || ""), consiglio: String(x.c || ""),
+        bestSituation: String(x.bs || ""), worstSituation: String(x.ws || ""), sets,
+        videoId: vid,
         kpi: k.length ? { n: k[0], tpi: k[1], net: k[2], ret: k[3], pps: k[4], res: k[5], qr: k[6], conv: k[7], setter: k[8] === 1 } : null,
-        actions: (Array.isArray(x.a) ? x.a : []).map((y, j) => ({ id: j, time: Math.max(0, Number(y[0]) || 0), skill: SKILLS[y[1]], result: y[2] })).filter((a) => a.skill && RESULT_TEXT[a.result]).sort((a, b) => a.time - b.time),
+        actions: (Array.isArray(x.a) ? x.a : []).map((y, j) => ({ id: j, time: Math.max(0, Number(y[0]) || 0), skill: SKILLS[y[1]], result: y[2], aiFlag: y[3] === 1 || y[3] === true })).filter((a) => a.skill && RESULT_TEXT[a.result]).sort((a, b) => a.time - b.time),
       };
     }),
   };
@@ -251,15 +258,18 @@ function parseMatchObj(d) {
 /* Il link contiene SOLO i dati del singolo giocatore. Mai la API key. */
 async function buildReportLink(p, r, videoId) {
   const payload = {
-    v: 1,
+    v: 2,
     n: p.number,
     nm: p.name,
     r: p.role,
     vt: r ? r.voto : null,
     f: r ? r.forza : "",
     c: r ? r.consiglio : "",
+    bs: r && r.bestSituation ? r.bestSituation : "",
+    ws: r && r.worstSituation ? r.worstSituation : "",
+    st: r && r.sets ? r.sets : {},
     vid: videoId || "",
-    a: p.actions.map((a) => [a.time, SKILLS.indexOf(a.skill), a.result]),
+    a: p.actions.map((a) => [a.time, SKILLS.indexOf(a.skill), a.result, a.aiFlag ? 1 : 0]),
   };
   const base = basePageUrl();
   const code = await saveShortPayload("rep", payload);
@@ -362,10 +372,18 @@ function fullStats(roster, stats, kpi) {
 
 async function buildMatchLink(ps, reports, kpiFn, videoId) {
   const payload = {
-    v: 2, vid: videoId || "",
+    v: 3, vid: videoId || "",
     p: ps.map((p) => {
       const r = reports[p.key], k = kpiFn(p);
-      return { n: p.number, nm: p.name, r: p.role, vt: r ? r.voto : null, f: r ? r.forza : "", c: r ? r.consiglio : "", k: [k.n, k.tpi, k.net, k.ret, k.pps, k.res, k.qr, k.conv, k.setter ? 1 : 0], a: p.actions.map((a) => [a.time, SKILLS.indexOf(a.skill), a.result]) };
+      return {
+        n: p.number, nm: p.name, r: p.role,
+        vt: r ? r.voto : null, f: r ? r.forza : "", c: r ? r.consiglio : "",
+        bs: r && r.bestSituation ? r.bestSituation : "",
+        ws: r && r.worstSituation ? r.worstSituation : "",
+        st: r && r.sets ? r.sets : {},
+        k: [k.n, k.tpi, k.net, k.ret, k.pps, k.res, k.qr, k.conv, k.setter ? 1 : 0],
+        a: p.actions.map((a) => [a.time, SKILLS.indexOf(a.skill), a.result, a.aiFlag ? 1 : 0])
+      };
     }),
   };
   const base = basePageUrl();
@@ -551,14 +569,18 @@ function matchDataText(stats) {
 }
 
 function buildPrompt(ps, rot, kpiFn, rallies) {
+  const playedSets = [1, 2, 3, 4, 5].filter((s) => rallies.some((r) => (r.set || 1) === s) || ps.some((p) => p.actions.some((a) => (a.set || 1) === s)));
   const L = [
-    "Sei un allenatore di pallavolo esperto. Ti passo i dati di scouting di una partita. Scrivi la pagella di OGNI giocatore elencato (Libero incluso).",
+    "Sei un allenatore di pallavolo esperto. Ti passo i dati di scouting completi (globali e set per set) di una partita. Scrivi un report approfondito e la pagella di OGNI giocatore elencato (Libero incluso).",
     "",
     "REGOLE:",
     "- voto da 4.0 a 10.0 (un decimale), pesato sul ruolo: conta soprattutto il fondamentale principale. Con pochi tocchi (meno di 5) sii prudente: voti vicini al 6.",
-    "- forza: UNA frase (max 25 parole) sul punto di forza, basata sui numeri reali.",
+    "- forza: UNA frase (max 25 parole) sul principale punto di forza mostrato in partita, basata sui numeri reali.",
     "- consiglio: UNA frase pratica (max 25 parole) su cosa lavorare in allenamento.",
-    "- Non inventare dati assenti. Tono diretto e motivante, in italiano.",
+    "- bestSituation: 1-2 frasi specifiche che evidenziano DOVE/QUANDO ha reso al meglio (es. rotazione P1/P4, fondamentale, set specifico o azioni ⭐ in evidenza).",
+    "- worstSituation: 1-2 frasi specifiche che evidenziano la situazione/rotazione/fase o set in cui ha faticato o commesso più errori diretti (=).",
+    "- sets: oggetto con chiave il numero del set giocato dal giocatore (es. \"1\", \"2\") e valore un mini-report tecnico (max 30 parole) sull'andamento in quel set (tocchi, fondamentali chiave, continuità, rotazioni/errori).",
+    "- Non inventare dati assenti. Tono diretto, analitico e motivante, in italiano.",
     "- I / (Murati / Merito Avversario) NON sono errori: NON penalizzare il voto per i / subiti. Penalizza solo gli errori diretti (=).",
     "- Per il Palleggiatore il TPI non c'è (ridondante): valutalo ESCLUSIVAMENTE su Qualità/Efficienza di Alzata, Difesa, Battuta, Saldo ± e rendimento nelle rotazioni P1–P6.",
     "",
@@ -566,7 +588,7 @@ function buildPrompt(ps, rot, kpiFn, rallies) {
     "FONDAMENTALI CHE CONTANO PER RUOLO:",
   ];
   Array.from(new Set(ps.map((p) => p.role))).forEach((r) => L.push("- " + r + ": " + (ROLE_FOCUS[r] || "tutti")));
-  L.push("", "RENDIMENTO PER ROTAZIONE:");
+  L.push("", "RENDIMENTO PER ROTAZIONE (PARTITA):");
   for (let n = 1; n <= 6; n++) {
     const x = rot[n];
     if (x && x.w + x.l > 0) L.push(`P${n}: ${x.w + x.l} scambi, ${x.w} vinti-${x.l} persi, saldo ${x.w - x.l > 0 ? "+" : ""}${x.w - x.l}, Side-Out ${pctTxt(pct(x.soW, x.soN))}, Break Point ${pctTxt(pct(x.bpW, x.bpN))}`);
@@ -575,19 +597,63 @@ function buildPrompt(ps, rot, kpiFn, rallies) {
   ps.forEach((p) => {
     const v = kpiFn(p);
     L.push(`[ID ${p.rid != null ? p.rid : p.number}] n.${p.number} ${p.name} | ${p.role} | Minutaggio: ${v.n} scambi (~${v.setEq} set eq.)`);
-    L.push("  Statistiche: " + (p.skills.length ? p.skills.map((s) => `${s.skill} ${s.tot} (#${s["#"]} +${s["+"]} -${s["-"]} =${s["="]}, Pos ${pctTxt(s.pos)}, Eff ${pctTxt(s.eff)})`).join("; ") : "nessuna azione taggata"));
+    L.push("  Statistiche globali: " + (p.skills.length ? p.skills.map((s) => `${s.skill} ${s.tot} (#${s["#"]} +${s["+"]} -${s["-"]} /${s["/"]} =${s["="]}, Pos ${pctTxt(s.pos)}, Eff ${pctTxt(s.eff)})`).join("; ") : "nessuna azione taggata"));
     L.push(`  Murati / Merito Avversario (/): ${p.total["/"]} | Errori diretti (=): ${p.total["="]}  [i / NON penalizzano il voto]`);
     const rest = `Net ± ${v.net > 0 ? "+" : ""}${v.net} | Ball Retention ${pctTxt(v.ret)} | Punti/Set ${v.pps} | Resilienza ${pctTxt(v.res)}`;
-    L.push("  KPI: " + (v.setter ? `Qualità Regia (# + +) ${pctTxt(v.qr)} | Conversione Punti su Alzata ${pctTxt(v.conv)} | ` : `TPI ${pctTxt(v.tpi)} | `) + rest);
-    if (v.setter) {
-      const rr = [];
-      for (let n = 1; n <= 6; n++) { const w = rallies.filter((r) => r.rot === n && r.lineup.includes(p.key)); if (w.length) { const s = w.filter((r) => r.won).length * 2 - w.length; rr.push(`P${n} ${s > 0 ? "+" : ""}${s} (${w.length} scambi)`); } }
-      L.push("  Saldo per rotazione con lui in campo: " + (rr.join("; ") || "n/d"));
+    L.push("  KPI globali: " + (v.setter ? `Qualità Regia (# + +) ${pctTxt(v.qr)} | Conversione Punti su Alzata ${pctTxt(v.conv)} | ` : `TPI ${pctTxt(v.tpi)} | `) + rest);
+
+    const setLines = [];
+    playedSets.forEach((sNo) => {
+      const sActs = p.actions.filter((a) => (a.set || 1) === sNo);
+      const sRals = rallies.filter((r) => (r.set || 1) === sNo && r.lineup.includes(p.key));
+      if (!sActs.length && !sRals.length) return;
+      const totC = emptyCounts();
+      const bySk = {};
+      sActs.forEach((a) => {
+        totC[a.result] += 1; totC.tot += 1;
+        if (!bySk[a.skill]) bySk[a.skill] = emptyCounts();
+        bySk[a.skill][a.result] += 1; bySk[a.skill].tot += 1;
+      });
+      const dTot = derive(totC);
+      const sNet = sRals.reduce((acc, r) => acc + (r.won ? 1 : -1), 0);
+      const skStr = SKILLS.filter((sk) => bySk[sk]).map((sk) => {
+        const ds = derive(bySk[sk]);
+        return `${sk} ${ds.tot} (#${ds["#"]} +${ds["+"]} -${ds["-"]} /${ds["/"]} =${ds["="]}, Pos ${pctTxt(ds.pos)}, Eff ${pctTxt(ds.eff)})`;
+      }).join(", ");
+      setLines.push(`    - Set ${sNo}: ${sRals.length} scambi (Saldo ${sNet > 0 ? "+" : ""}${sNet}), ${totC.tot} tocchi (Pos ${pctTxt(dTot.pos)}, Eff ${pctTxt(dTot.eff)}) -> ${skStr || "solo presenza in campo"}`);
+    });
+    if (setLines.length) {
+      L.push("  Dettaglio Set per Set:");
+      setLines.forEach((sl) => L.push(sl));
     }
+
+    const rr = [];
+    for (let n = 1; n <= 6; n++) {
+      const w = rallies.filter((r) => r.rot === n && r.lineup.includes(p.key));
+      if (w.length) {
+        const s = w.filter((r) => r.won).length * 2 - w.length;
+        rr.push(`P${n} ${s > 0 ? "+" : ""}${s} (${w.length} scambi)`);
+      }
+    }
+    L.push("  Saldo per rotazione con lui in campo: " + (rr.join("; ") || "n/d"));
+
+    const starred = p.actions.filter((a) => a.aiFlag).sort((a, b) => a.time - b.time);
+    L.push("  Azioni segnate con ⭐ dall'allenatore: " + (starred.length ? starred.map((a) => {
+      const rr = a.rot || (rallies.find((r) => r.id === a.rallyId) || {}).rot;
+      return `Set ${a.set || 1} ${a.skill} ${a.result} (${rr ? "P" + rr : "P?"}, ${a.time > 0 ? fmt(a.time) : "live"})`;
+    }).join("; ") : "nessuna"));
+
     const errs = p.actions.filter((a) => a.result === "=").sort((a, b) => a.time - b.time);
-    L.push("  Errori diretti (=) con rotazione e tempo: " + (errs.length ? errs.map((a) => { const rr = a.rot || (rallies.find((r) => r.id === a.rallyId) || {}).rot; return `${a.skill} (${rr ? "P" + rr : "P?"}, ${a.time > 0 ? fmt(a.time) : "live"})`; }).join("; ") : "nessuno"));
+    L.push("  Errori diretti (=) con set, rotazione e tempo: " + (errs.length ? errs.map((a) => {
+      const rr = a.rot || (rallies.find((r) => r.id === a.rallyId) || {}).rot;
+      return `Set ${a.set || 1} ${a.skill} (${rr ? "P" + rr : "P?"}, ${a.time > 0 ? fmt(a.time) : "live"})`;
+    }).join("; ") : "nessuno"));
   });
-  L.push("", 'Rispondi ESCLUSIVAMENTE con un JSON valido (nessun testo extra, nessun markdown), usando come chiave l\'ID indicato tra [ID ...]:', '{ "ID_GIOCATORE": { "voto": 7.5, "forza": "...", "consiglio": "..." } }');
+  L.push(
+    "",
+    'Rispondi ESCLUSIVAMENTE con un JSON valido (nessun testo extra, nessun markdown), usando come chiave l\'ID indicato tra [ID ...]:',
+    '{ "ID_GIOCATORE": { "voto": 7.5, "forza": "...", "consiglio": "...", "bestSituation": "...", "worstSituation": "...", "sets": { "1": "...", "2": "..." } } }'
+  );
   return L.join("\n");
 }
 
@@ -620,28 +686,38 @@ function whatsappText(p, r, videoId) {
   const L = [`*Pagella - ${p.name} (n. ${p.number})*`, `Ruolo: ${p.role}`];
   if (r) {
     L.push(`Voto: *${r.voto.toFixed(1)}*`, `✅ Punto di forza: ${r.forza}`, `🎯 Da migliorare: ${r.consiglio}`);
+    if (r.bestSituation) L.push(`🔥 Dove hai reso al meglio: ${r.bestSituation}`);
+    if (r.worstSituation) L.push(`⚠️ Situazione critica: ${r.worstSituation}`);
+    const setKeys = r.sets && typeof r.sets === "object" ? Object.keys(r.sets).filter((k) => r.sets[k]) : [];
+    if (setKeys.length) {
+      L.push("", "📋 Andamento Set per Set:");
+      setKeys.sort((a, b) => Number(a) - Number(b)).forEach((k) => L.push(`• Set ${k}: ${r.sets[k]}`));
+    }
   }
-  L.push("📊 Numeri della partita:");
+  L.push("", "📊 Numeri della partita:");
   p.skills.forEach((s) => L.push(`• ${s.skill}: ${s.tot} tocchi (# ${s["#"]}, + ${s["+"]}, - ${s["-"]}, / ${s["/"]}, = ${s["="]}) - Pos ${pctTxt(s.pos)}, Eff ${pctTxt(s.eff)}`));
   if (videoId && p.actions.length) {
     L.push("", "🎬 Rivedi le tue azioni:");
     p.actions
       .slice()
       .sort((a, b) => a.time - b.time)
-      .forEach((a) => L.push(`• ${fmt(a.time)} ${a.skill} ${a.result} → https://youtu.be/${videoId}?t=${Math.floor(a.time)}`));
+      .forEach((a) => L.push(`• ${a.aiFlag ? "⭐ " : ""}${fmt(a.time)} ${a.skill} ${a.result} → https://youtu.be/${videoId}?t=${Math.floor(a.time)}`));
   }
   return L.join("\n");
 }
 
 function PlayerCard({ p, report, videoId, onClip, onCopy, onLink, onGen, busy, err, kpi }) {
   const nFlag = p.actions.filter((a) => a.aiFlag).length;
+  const setKeys = report && report.sets && typeof report.sets === "object"
+    ? Object.keys(report.sets).filter((k) => report.sets[k]).sort((a, b) => Number(a) - Number(b))
+    : [];
   return (
     <article className="flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-900 p-4">
       <header className="flex items-center gap-3">
         <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-2xl font-extrabold">{p.number}</div>
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-lg font-bold leading-tight">{p.name}</h3>
-          <p className="text-sm text-slate-400">{p.role} · {p.total.tot} tocchi · ⭐ {nFlag}/6</p>
+          <p className="text-sm text-slate-400">{p.role} · {p.total.tot} tocchi · ⭐ {nFlag} in evidenza</p>
         </div>
         {report ? (
           <div className={`rounded-xl px-3 py-2 text-3xl font-black leading-none ${gradeColor(report.voto)}`}>{report.voto.toFixed(1)}</div>
@@ -682,20 +758,56 @@ function PlayerCard({ p, report, videoId, onClip, onCopy, onLink, onGen, busy, e
       </div>
 
       {report && (
-        <div className="space-y-2 text-sm">
+        <div className="space-y-2.5 text-sm">
           <p><span className="font-bold text-emerald-400">Punto di forza. </span>{report.forza}</p>
           <p><span className="font-bold text-orange-300">Consiglio tecnico. </span>{report.consiglio}</p>
+          {report.bestSituation && (
+            <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/30 p-2.5 text-xs leading-relaxed">
+              <span className="font-bold text-emerald-300">🔥 Dove ha reso al meglio: </span>
+              <span className="text-slate-200">{report.bestSituation}</span>
+            </div>
+          )}
+          {report.worstSituation && (
+            <div className="rounded-lg border border-rose-500/30 bg-rose-950/30 p-2.5 text-xs leading-relaxed">
+              <span className="font-bold text-rose-300">⚠️ Situazione critica: </span>
+              <span className="text-slate-200">{report.worstSituation}</span>
+            </div>
+          )}
+          {setKeys.length > 0 && (
+            <div className="space-y-1.5 rounded-lg border border-slate-800 bg-slate-950/60 p-2.5">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">📋 Report Set per Set</div>
+              {setKeys.map((k) => (
+                <div key={k} className="flex items-start gap-2 text-xs leading-snug">
+                  <span className="mt-0.5 shrink-0 rounded bg-orange-500/20 px-1.5 py-0.5 font-mono text-[10px] font-bold text-orange-300">Set {k}</span>
+                  <span className="text-slate-200">{report.sets[k]}</span>
+                </div>
+              ))}
+            </div>
+          )}
           {report.clips > 0 && <p className="text-xs text-slate-500">🎬 Voto basato anche sull'analisi video di {report.clips} clip.</p>}
         </div>
       )}
 
-      {videoId && (
+      {p.actions.length > 0 && (
         <div>
-          <h4 className="mb-1 text-xs font-semibold text-slate-400">Rivedi le clip</h4>
-          <div className="flex max-h-24 flex-wrap gap-1 overflow-y-auto">
+          <h4 className="mb-1 text-xs font-semibold text-slate-400">
+            {videoId ? "Rivedi le clip" : "Azioni registrate"} {nFlag > 0 && <span className="text-amber-300">(⭐ {nFlag} in evidenza)</span>}
+          </h4>
+          <div className="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">
             {p.actions.map((a) => (
-              <button key={a.id} onClick={() => onClip(a.time)} className="flex items-center gap-1 rounded-md bg-slate-800 px-2 py-1 text-xs hover:bg-slate-700">
-                <Play className="h-3 w-3" />
+              <button
+                key={a.id}
+                onClick={() => videoId && onClip(a.time)}
+                disabled={!videoId}
+                title={a.aiFlag ? "Clip stellata in evidenza per AI" : "Rivedi clip"}
+                className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs transition ${
+                  a.aiFlag
+                    ? "border border-amber-400/70 bg-amber-500/20 text-amber-100 shadow-[0_0_8px_rgba(251,191,36,0.2)] hover:bg-amber-500/30"
+                    : "bg-slate-800 hover:bg-slate-700"
+                }`}
+              >
+                {a.aiFlag && <span className="text-xs">⭐</span>}
+                {videoId && <Play className="h-3 w-3" />}
                 <span className="font-mono">{fmt(a.time)}</span> {a.skill}
                 <b className={RESULT_TEXT[a.result]}>{a.result}</b>
               </button>
@@ -1591,7 +1703,18 @@ function VolleyScout() {
         const r = roster.find((x) => String(x.id) === ks) || roster.find((x) => x.name.toLowerCase() === ks.toLowerCase()) || roster.find((x) => String(x.number) === ks.replace(/\D/g, ""));
         const v = parseFloat(String(o.voto).replace(",", "."));
         if (!r || isNaN(v)) return;
-        next[r.number + "|" + r.name] = { voto: Math.round(Math.min(10, Math.max(1, v)) * 10) / 10, forza: String(o.forza || ""), consiglio: String(o.consiglio || ""), clips: 0 };
+        const rawSets = o.sets && typeof o.sets === "object" && !Array.isArray(o.sets) ? o.sets : {};
+        const cleanSets = {};
+        Object.keys(rawSets).forEach((sk) => { if (rawSets[sk]) cleanSets[String(sk)] = String(rawSets[sk]); });
+        next[r.number + "|" + r.name] = {
+          voto: Math.round(Math.min(10, Math.max(1, v)) * 10) / 10,
+          forza: String(o.forza || ""),
+          consiglio: String(o.consiglio || ""),
+          bestSituation: String(o.bestSituation || o.meglio || ""),
+          worstSituation: String(o.worstSituation || o.peggio || ""),
+          sets: cleanSets,
+          clips: 0,
+        };
         ok++;
       });
       if (!ok) throw new Error("nessun giocatore riconosciuto");
@@ -2266,7 +2389,7 @@ function VolleyScout() {
           </div>
           <div className="mt-4">
             <label className="mb-1 block text-sm font-semibold text-slate-300" htmlFor="pj">📥 Incolla Risposta JSON di Claude</label>
-            <textarea id="pj" rows={5} value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder='{ "5": { "voto": 7.5, "forza": "...", "consiglio": "..." } }' className={`${inputCls} w-full font-mono text-xs`} />
+            <textarea id="pj" rows={5} value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder='{ "5": { "voto": 7.5, "forza": "...", "consiglio": "...", "bestSituation": "...", "worstSituation": "...", "sets": { "1": "...", "2": "..." } } }' className={`${inputCls} w-full font-mono text-xs`} />
             <button onClick={applyReports} disabled={!pasteText.trim()} className="mt-2 flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-500 disabled:opacity-40"><Sparkles className="h-4 w-4" /> ✨ Applica Pagelle</button>
             {pasteMsg && <p className={`mt-2 rounded-lg p-3 text-sm ${pasteMsg.type === "ok" ? "bg-emerald-950 text-emerald-300" : "bg-rose-950 text-rose-300"}`}>{pasteMsg.text}</p>}
           </div>
@@ -2325,6 +2448,7 @@ function VolleyScout() {
 /* ================= VISTA ATLETA (#report=...) ================= */
 const FILTERS = [
   { key: "all", label: "Tutte" },
+  { key: "star", label: "⭐ In evidenza" },
   { key: "#", label: "Punti #" },
   { key: "+", label: "Positivi +" },
   { key: "-", label: "Negativi -" },
@@ -2349,15 +2473,16 @@ function ReportError() {
 }
 
 function AthleteView({ data, onSwitch }) {
-  const { number, name, role, voto, forza, consiglio, videoId, actions, kpi } = data;
+  const { number, name, role, voto, forza, consiglio, bestSituation, worstSituation, sets, videoId, actions, kpi } = data;
   const [filter, setFilter] = useState("all");
   const [activeId, setActiveId] = useState(null);
   const [clipStart, setClipStart] = useState(0);
   const [clipPlayNonce, setClipPlayNonce] = useState(0);
 
   const stat = computeStats(actions.map((a) => ({ ...a, number, name, role })))[0];
-  const visible = filter === "all" ? actions : actions.filter((a) => a.result === filter);
-  const countOf = (k) => (k === "all" ? actions.length : actions.filter((a) => a.result === k).length);
+  const visible = filter === "all" ? actions : filter === "star" ? actions.filter((a) => a.aiFlag) : actions.filter((a) => a.result === filter);
+  const countOf = (k) => (k === "all" ? actions.length : k === "star" ? actions.filter((a) => a.aiFlag).length : actions.filter((a) => a.result === k).length);
+  const setKeys = sets && typeof sets === "object" ? Object.keys(sets).filter((k) => sets[k]).sort((a, b) => Number(a) - Number(b)) : [];
 
   useEffect(() => { document.title = "Pagella " + name + " - VolleyScout"; }, [name]);
 
@@ -2409,6 +2534,31 @@ function AthleteView({ data, onSwitch }) {
             <section className="rounded-xl border-l-4 border-orange-400 bg-orange-950/40 p-4">
               <h2 className="font-bold text-orange-300">Consiglio tecnico</h2>
               <p className="mt-1 text-slate-100">{consiglio}</p>
+            </section>
+          )}
+          {bestSituation && (
+            <section className="rounded-xl border border-emerald-500/40 bg-emerald-950/30 p-4">
+              <h2 className="font-bold text-emerald-300">🔥 Dove hai reso al meglio</h2>
+              <p className="mt-1 text-sm text-slate-100">{bestSituation}</p>
+            </section>
+          )}
+          {worstSituation && (
+            <section className="rounded-xl border border-rose-500/40 bg-rose-950/30 p-4">
+              <h2 className="font-bold text-rose-300">⚠️ Situazione critica</h2>
+              <p className="mt-1 text-sm text-slate-100">{worstSituation}</p>
+            </section>
+          )}
+          {setKeys.length > 0 && (
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+              <h2 className="mb-3 text-lg font-bold">📋 Andamento Set per Set</h2>
+              <div className="space-y-2.5">
+                {setKeys.map((k) => (
+                  <div key={k} className="flex items-start gap-2.5 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                    <span className="shrink-0 rounded-md bg-orange-500 px-2 py-0.5 font-mono text-xs font-black text-slate-950">SET {k}</span>
+                    <p className="text-sm leading-snug text-slate-200">{sets[k]}</p>
+                  </div>
+                ))}
+              </div>
             </section>
           )}
 
@@ -2509,11 +2659,20 @@ function AthleteView({ data, onSwitch }) {
                   <button
                     onClick={() => playClip(a)}
                     disabled={!videoId}
-                    className={`flex min-h-[52px] flex-1 items-center gap-3 rounded-xl border px-3 py-2 text-left disabled:opacity-60 ${activeId === a.id ? "border-orange-400 bg-slate-800" : "border-slate-800 bg-slate-900 hover:bg-slate-800"}`}
+                    className={`flex min-h-[52px] flex-1 items-center gap-3 rounded-xl border px-3 py-2 text-left disabled:opacity-60 ${
+                      activeId === a.id
+                        ? "border-orange-400 bg-slate-800"
+                        : a.aiFlag
+                        ? "border-amber-400/70 bg-amber-950/25 hover:bg-amber-950/40"
+                        : "border-slate-800 bg-slate-900 hover:bg-slate-800"
+                    }`}
                   >
                     <Play className="h-4 w-4 shrink-0 text-orange-400" />
                     <span className="font-mono text-base tabular-nums text-orange-300">{fmt(a.time)}</span>
-                    <span className="flex-1 font-semibold">{a.skill}</span>
+                    <span className="flex flex-1 items-center gap-1.5 font-semibold">
+                      <span>{a.skill}</span>
+                      {a.aiFlag && <span className="rounded-full bg-amber-400/20 px-2 py-0.5 text-xs font-bold text-amber-300">⭐ In evidenza</span>}
+                    </span>
                     <span className={`flex h-8 w-8 items-center justify-center rounded-lg text-lg font-black ${RESULT_BADGE[a.result]}`}>{a.result}</span>
                   </button>
                   {videoId && (
