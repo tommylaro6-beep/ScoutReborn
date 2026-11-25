@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <title>VolleyScout - Video scouting pallavolo</title>
 <script src="https://cdn.tailwindcss.com/3.4.17"></script>
 <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
@@ -170,8 +171,85 @@ function fromBase64Url(b64) {
   return new TextDecoder().decode(bytes);
 }
 
+/* Genera ID breve (6 caratteri) e salva su Supabase nella stessa tabella volley_sync */
+function shortCode() {
+  const chars = "abcdefghjkmnpqrstuvwxyz23456789";
+  let s = "";
+  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+function basePageUrl() {
+  return window.location.protocol === "file:"
+    ? window.location.href.split("#")[0]
+    : window.location.origin + window.location.pathname;
+}
+async function saveShortPayload(prefix, payload) {
+  if (!supabaseClient) return null;
+  try {
+    const code = shortCode();
+    const id = prefix + "_" + code;
+    const now = new Date().toISOString();
+    const { error } = await supabaseClient.from(CLOUD_TABLE).upsert({
+      id,
+      data: { kind: prefix, payload, createdAt: now },
+      updated_at: now,
+    });
+    if (error) return null;
+    return code;
+  } catch (e) {
+    return null;
+  }
+}
+async function loadShortPayload(prefix, code) {
+  if (!supabaseClient || !/^[a-z0-9]{4,12}$/i.test(code || "")) return null;
+  try {
+    const { data: row, error } = await supabaseClient
+      .from(CLOUD_TABLE)
+      .select("data")
+      .eq("id", prefix + "_" + code.toLowerCase())
+      .maybeSingle();
+    if (error || !row || !row.data || !row.data.payload) return null;
+    return row.data.payload;
+  } catch (e) {
+    return null;
+  }
+}
+function parseReportObj(d) {
+  if (!d || typeof d !== "object") return { error: true };
+  const actions = (Array.isArray(d.a) ? d.a : [])
+    .map((x, i) => ({ id: i, time: Math.max(0, Number(x[0]) || 0), skill: SKILLS[x[1]], result: x[2] }))
+    .filter((a) => a.skill && RESULT_TEXT[a.result])
+    .sort((a, b) => a.time - b.time);
+  const vt = parseFloat(d.vt);
+  return {
+    number: d.n,
+    name: String(d.nm || "Giocatore"),
+    role: String(d.r || ""),
+    voto: isNaN(vt) ? null : vt,
+    forza: String(d.f || ""),
+    consiglio: String(d.c || ""),
+    videoId: /^[\w-]{11}$/.test(d.vid || "") ? d.vid : null,
+    actions,
+  };
+}
+function parseMatchObj(d) {
+  if (!d || !Array.isArray(d.p)) return { error: true };
+  const vid = /^[\w-]{11}$/.test(d.vid || "") ? d.vid : null;
+  return {
+    players: d.p.map((x, i) => {
+      const vt = parseFloat(x.vt), k = Array.isArray(x.k) ? x.k : [];
+      return {
+        id: i, number: x.n, name: String(x.nm || "Giocatore"), role: String(x.r || ""), voto: isNaN(vt) ? null : vt,
+        forza: String(x.f || ""), consiglio: String(x.c || ""), videoId: vid,
+        kpi: k.length ? { n: k[0], tpi: k[1], net: k[2], ret: k[3], pps: k[4], res: k[5], qr: k[6], conv: k[7], setter: k[8] === 1 } : null,
+        actions: (Array.isArray(x.a) ? x.a : []).map((y, j) => ({ id: j, time: Math.max(0, Number(y[0]) || 0), skill: SKILLS[y[1]], result: y[2] })).filter((a) => a.skill && RESULT_TEXT[a.result]).sort((a, b) => a.time - b.time),
+      };
+    }),
+  };
+}
+
 /* Il link contiene SOLO i dati del singolo giocatore. Mai la API key. */
-function buildReportLink(p, r, videoId) {
+async function buildReportLink(p, r, videoId) {
   const payload = {
     v: 1,
     n: p.number,
@@ -183,10 +261,9 @@ function buildReportLink(p, r, videoId) {
     vid: videoId || "",
     a: p.actions.map((a) => [a.time, SKILLS.indexOf(a.skill), a.result]),
   };
-  const base =
-    window.location.protocol === "file:"
-      ? window.location.href.split("#")[0]
-      : window.location.origin + window.location.pathname;
+  const base = basePageUrl();
+  const code = await saveShortPayload("rep", payload);
+  if (code) return base + "#r=" + code;
   return base + "#report=" + encodeURIComponent(toBase64Url(JSON.stringify(payload)));
 }
 
@@ -195,23 +272,7 @@ function readReportHash() {
   const h = window.location.hash || "";
   if (!h.startsWith("#report=")) return null;
   try {
-    const d = JSON.parse(fromBase64Url(decodeURIComponent(h.slice("#report=".length))));
-    if (!d || typeof d !== "object") return { error: true };
-    const actions = (Array.isArray(d.a) ? d.a : [])
-      .map((x, i) => ({ id: i, time: Math.max(0, Number(x[0]) || 0), skill: SKILLS[x[1]], result: x[2] }))
-      .filter((a) => a.skill && RESULT_TEXT[a.result])
-      .sort((a, b) => a.time - b.time);
-    const vt = parseFloat(d.vt);
-    return {
-      number: d.n,
-      name: String(d.nm || "Giocatore"),
-      role: String(d.r || ""),
-      voto: isNaN(vt) ? null : vt,
-      forza: String(d.f || ""),
-      consiglio: String(d.c || ""),
-      videoId: /^[\w-]{11}$/.test(d.vid || "") ? d.vid : null,
-      actions,
-    };
+    return parseReportObj(JSON.parse(fromBase64Url(decodeURIComponent(h.slice("#report=".length)))));
   } catch (e) {
     return { error: true };
   }
@@ -299,7 +360,7 @@ function fullStats(roster, stats, kpi) {
   return out.sort((a, b) => a.number - b.number);
 }
 
-function buildMatchLink(ps, reports, kpiFn, videoId) {
+async function buildMatchLink(ps, reports, kpiFn, videoId) {
   const payload = {
     v: 2, vid: videoId || "",
     p: ps.map((p) => {
@@ -307,7 +368,9 @@ function buildMatchLink(ps, reports, kpiFn, videoId) {
       return { n: p.number, nm: p.name, r: p.role, vt: r ? r.voto : null, f: r ? r.forza : "", c: r ? r.consiglio : "", k: [k.n, k.tpi, k.net, k.ret, k.pps, k.res, k.qr, k.conv, k.setter ? 1 : 0], a: p.actions.map((a) => [a.time, SKILLS.indexOf(a.skill), a.result]) };
     }),
   };
-  const base = window.location.protocol === "file:" ? window.location.href.split("#")[0] : window.location.origin + window.location.pathname;
+  const base = basePageUrl();
+  const code = await saveShortPayload("mat", payload);
+  if (code) return base + "#m=" + code;
   return base + "#match=" + encodeURIComponent(toBase64Url(JSON.stringify(payload)));
 }
 
@@ -315,20 +378,7 @@ function readMatchHash() {
   const h = window.location.hash || "";
   if (!h.startsWith("#match=")) return null;
   try {
-    const d = JSON.parse(fromBase64Url(decodeURIComponent(h.slice(7))));
-    if (!d || !Array.isArray(d.p)) return { error: true };
-    const vid = /^[\w-]{11}$/.test(d.vid || "") ? d.vid : null;
-    return {
-      players: d.p.map((x, i) => {
-        const vt = parseFloat(x.vt), k = Array.isArray(x.k) ? x.k : [];
-        return {
-          id: i, number: x.n, name: String(x.nm || "Giocatore"), role: String(x.r || ""), voto: isNaN(vt) ? null : vt,
-          forza: String(x.f || ""), consiglio: String(x.c || ""), videoId: vid,
-          kpi: k.length ? { n: k[0], tpi: k[1], net: k[2], ret: k[3], pps: k[4], res: k[5], qr: k[6], conv: k[7], setter: k[8] === 1 } : null,
-          actions: (Array.isArray(x.a) ? x.a : []).map((y, j) => ({ id: j, time: Math.max(0, Number(y[0]) || 0), skill: SKILLS[y[1]], result: y[2] })).filter((a) => a.skill && RESULT_TEXT[a.result]).sort((a, b) => a.time - b.time),
-        };
-      }),
-    };
+    return parseMatchObj(JSON.parse(fromBase64Url(decodeURIComponent(h.slice(7)))));
   } catch (e) { return { error: true }; }
 }
 
@@ -884,12 +934,13 @@ function VolleyScout() {
     const ok = await copyText(text);
     showToast(ok ? okMsg : "Copia non riuscita: seleziona e copia manualmente.", ok ? ms : 2200);
   };
-  const copyPlayerLink = (p) => {
-    const link = buildReportLink(p, reports[p.key], videoId);
+  const copyPlayerLink = async (p) => {
+    showToast("Generazione link corto…", 1500);
+    const link = await buildReportLink(p, reports[p.key], videoId);
     if (window.location.protocol === "file:") {
       copyWithToast(link, "Link copiato, ma questo file è locale: pubblica index.html online perché i giocatori possano aprirlo.", 5000);
     } else {
-      copyWithToast(link, `Link pagella di ${p.name} copiato.`);
+      copyWithToast(link, `Link corto pagella di ${p.name} copiato!`);
     }
   };
   /* Cancella solo la partita corrente: restano roster, URL video e API key. */
@@ -932,10 +983,11 @@ function VolleyScout() {
       setPasteMsg({ type: "err", text: "JSON non valido: " + (e.message || "controlla la risposta di Claude") });
     }
   };
-  const copyMatchLink = () => {
-    const link = buildMatchLink(ps, reports, kpiRow, videoId);
+  const copyMatchLink = async () => {
+    showToast("Generazione link corto squadra…", 1500);
+    const link = await buildMatchLink(ps, reports, kpiRow, videoId);
     if (window.location.protocol === "file:") copyWithToast(link, "Link copiato, ma questo file è locale: pubblica index.html online perché la squadra possa aprirlo.", 5000);
-    else copyWithToast(link, "Link partita per la squadra copiato.");
+    else copyWithToast(link, "Link corto partita per la squadra copiato!");
   };
 
   /* --- Esporta / importa partita (telefono <-> PC) --- */
@@ -1672,13 +1724,10 @@ function ReportError() {
 
 function AthleteView({ data, onSwitch }) {
   const { number, name, role, voto, forza, consiglio, videoId, actions, kpi } = data;
-  const [apiReady, setApiReady] = useState(false);
   const [filter, setFilter] = useState("all");
   const [activeId, setActiveId] = useState(null);
-  const hostRef = useRef(null);
-  const playerRef = useRef(null);
-  const readyRef = useRef(false);
-  const pendingRef = useRef(null);
+  const [clipStart, setClipStart] = useState(0);
+  const [clipPlayNonce, setClipPlayNonce] = useState(0);
 
   const stat = computeStats(actions.map((a) => ({ ...a, number, name, role })))[0];
   const visible = filter === "all" ? actions : actions.filter((a) => a.result === filter);
@@ -1686,54 +1735,15 @@ function AthleteView({ data, onSwitch }) {
 
   useEffect(() => { document.title = "Pagella " + name + " - VolleyScout"; }, [name]);
 
-  useEffect(() => {
-    if (!videoId) return;
-    if (window.YT && window.YT.Player) { setApiReady(true); return; }
-    const prev = window.onYouTubeIframeAPIReady;
-    window.onYouTubeIframeAPIReady = () => { if (prev) prev(); setApiReady(true); };
-    if (!document.getElementById("yt-iframe-api")) {
-      const s = document.createElement("script");
-      s.id = "yt-iframe-api";
-      s.src = "https://www.youtube.com/iframe_api";
-      document.head.appendChild(s);
-    }
-  }, [videoId]);
-
-  useEffect(() => {
-    if (!apiReady || !videoId || playerRef.current || !hostRef.current) return;
-    const mount = document.createElement("div");
-    hostRef.current.innerHTML = "";
-    hostRef.current.appendChild(mount);
-    playerRef.current = new window.YT.Player(mount, {
-      videoId,
-      width: "100%",
-      height: "100%",
-      playerVars: { playsinline: 1, rel: 0, modestbranding: 1, controls: 1 },
-      events: {
-        onReady: () => {
-          readyRef.current = true;
-          if (pendingRef.current !== null) {
-            const t = pendingRef.current;
-            pendingRef.current = null;
-            try { playerRef.current.seekTo(t, true); playerRef.current.playVideo(); } catch (e) {}
-          }
-        },
-      },
-    });
-  }, [apiReady, videoId]);
-
-  useEffect(() => () => {
-    try { playerRef.current && playerRef.current.destroy(); } catch (e) {}
-  }, []);
-
   const playClip = (a) => {
     setActiveId(a.id);
-    if (readyRef.current && playerRef.current) {
-      try { playerRef.current.seekTo(a.time, true); playerRef.current.playVideo(); } catch (e) {}
-    } else {
-      pendingRef.current = a.time;
-    }
+    setClipStart(Math.max(0, Math.floor(a.time || 0)));
+    setClipPlayNonce((n) => n + 1);
   };
+
+  const embedSrc = videoId
+    ? `https://www.youtube.com/embed/${videoId}?start=${clipStart}&autoplay=${clipPlayNonce > 0 ? 1 : 0}&playsinline=1&rel=0&modestbranding=1`
+    : "";
 
   const hasGrade = typeof voto === "number";
 
@@ -1833,8 +1843,21 @@ function AthleteView({ data, onSwitch }) {
             {videoId ? (
               <div className="sticky top-0 z-20 -mx-4 bg-black sm:mx-0 sm:overflow-hidden sm:rounded-xl">
                 <div className="relative aspect-video">
-                  <div ref={hostRef} className="absolute inset-0 [&_iframe]:h-full [&_iframe]:w-full" />
-                  {!apiReady && <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-400">Caricamento video…</div>}
+                  <iframe
+                    key={`${videoId}-${clipStart}-${clipPlayNonce}`}
+                    src={embedSrc}
+                    title="Video azioni"
+                    className="h-full w-full border-0"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                    referrerPolicy="strict-origin-when-cross-origin"
+                    allowFullScreen
+                  />
+                </div>
+                <div className="flex items-center justify-between bg-slate-900/95 px-3 py-1.5 text-xs text-slate-400">
+                  <span>Tocca un'azione sotto per saltare al momento</span>
+                  <a href={`https://youtu.be/${videoId}?t=${clipStart}`} target="_blank" rel="noopener noreferrer" className="font-semibold text-orange-400 hover:underline">
+                    Apri su YouTube ↗
+                  </a>
                 </div>
               </div>
             ) : (
@@ -1856,17 +1879,28 @@ function AthleteView({ data, onSwitch }) {
             <ul className="mt-3 space-y-2">
               {visible.length === 0 && <li className="rounded-lg bg-slate-900 p-4 text-center text-slate-400">Nessuna clip in questa categoria.</li>}
               {visible.map((a) => (
-                <li key={a.id}>
+                <li key={a.id} className="flex items-stretch gap-2">
                   <button
                     onClick={() => playClip(a)}
                     disabled={!videoId}
-                    className={`flex min-h-[52px] w-full items-center gap-3 rounded-xl border px-3 py-2 text-left disabled:opacity-60 ${activeId === a.id ? "border-orange-400 bg-slate-800" : "border-slate-800 bg-slate-900 hover:bg-slate-800"}`}
+                    className={`flex min-h-[52px] flex-1 items-center gap-3 rounded-xl border px-3 py-2 text-left disabled:opacity-60 ${activeId === a.id ? "border-orange-400 bg-slate-800" : "border-slate-800 bg-slate-900 hover:bg-slate-800"}`}
                   >
                     <Play className="h-4 w-4 shrink-0 text-orange-400" />
                     <span className="font-mono text-base tabular-nums text-orange-300">{fmt(a.time)}</span>
                     <span className="flex-1 font-semibold">{a.skill}</span>
                     <span className={`flex h-8 w-8 items-center justify-center rounded-lg text-lg font-black ${RESULT_BADGE[a.result]}`}>{a.result}</span>
                   </button>
+                  {videoId && (
+                    <a
+                      href={`https://youtu.be/${videoId}?t=${Math.floor(a.time)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Apri direttamente su YouTube"
+                      className="flex items-center justify-center rounded-xl border border-slate-800 bg-slate-900 px-3 text-xs font-bold text-slate-300 hover:border-orange-400 hover:text-orange-300"
+                    >
+                      YT ↗
+                    </a>
+                  )}
                 </li>
               ))}
             </ul>
@@ -1881,11 +1915,52 @@ function AthleteView({ data, onSwitch }) {
 /* ================= APP: vista allenatore o vista atleta ================= */
 function App() {
   const [hash, setHash] = useState(() => window.location.hash);
+  const [cloudView, setCloudView] = useState({ loading: false, kind: null, data: null });
+
   useEffect(() => {
     const onHash = () => setHash(window.location.hash);
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const h = hash || "";
+    if (h.startsWith("#m=")) {
+      const code = decodeURIComponent(h.slice(3)).trim();
+      setCloudView({ loading: true, kind: "match", data: null });
+      loadShortPayload("mat", code).then((payload) => {
+        if (cancelled) return;
+        setCloudView({ loading: false, kind: "match", data: payload ? parseMatchObj(payload) : { error: true } });
+      });
+    } else if (h.startsWith("#r=")) {
+      const code = decodeURIComponent(h.slice(3)).trim();
+      setCloudView({ loading: true, kind: "report", data: null });
+      loadShortPayload("rep", code).then((payload) => {
+        if (cancelled) return;
+        setCloudView({ loading: false, kind: "report", data: payload ? parseReportObj(payload) : { error: true } });
+      });
+    } else {
+      setCloudView({ loading: false, kind: null, data: null });
+    }
+    return () => { cancelled = true; };
+  }, [hash]);
+
+  if ((hash || "").startsWith("#m=") || (hash || "").startsWith("#r=")) {
+    if (cloudView.loading) {
+      return (
+        <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-950 p-6 text-center text-slate-100">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-orange-500 border-t-transparent" />
+          <p className="text-sm text-slate-400">Caricamento pagella in corso…</p>
+        </div>
+      );
+    }
+    if (!cloudView.data || cloudView.data.error) return <ReportError />;
+    return cloudView.kind === "match"
+      ? <MatchView key={hash} data={cloudView.data} />
+      : <AthleteView key={hash} data={cloudView.data} />;
+  }
+
   const match = readMatchHash();
   if (match) return match.error ? <ReportError /> : <MatchView key={hash} data={match} />;
   const report = readReportHash();
