@@ -1024,20 +1024,15 @@ function VolleyScout() {
         if (localIsEmpty && remoteHasData) {
           const okEmpty = window.confirm(
             "⚠️ ATTENZIONE: questo dispositivo è VUOTO (0 azioni, 0 scambi, archivio vuoto), mentre sul Cloud c'è un salvataggio del " + whenStr +
-            " (" + remAct + " azioni, " + remRal + " scambi, " + remArch + " partite in archivio).
-
-" +
-            "Premi ANNULLA e clicca prima '🔄 Carica da Cloud' per non perdere i dati!
-" +
+            " (" + remAct + " azioni, " + remRal + " scambi, " + remArch + " partite in archivio).\n\n" +
+            "Premi ANNULLA e clicca prima '🔄 Carica da Cloud' per non perdere i dati!\n" +
             "Vuoi davvero sovrascrivere tutto con una partita vuota?"
           );
           if (!okEmpty) { setCloud({ type: "", text: "" }); return; }
         } else if (remoteHasData && (locAct + locRal < remAct + remRal || locArch < remArch)) {
           const okLess = window.confirm(
             "⚠️ Sul Cloud c'è un salvataggio del " + whenStr + " con più dati (" + remAct + " azioni, " + remRal + " scambi, " + remArch +
-            " in archivio) rispetto a questo dispositivo (" + locAct + " azioni, " + locRal + " scambi, " + locArch + " in archivio).
-
-" +
+            " in archivio) rispetto a questo dispositivo (" + locAct + " azioni, " + locRal + " scambi, " + locArch + " in archivio).\n\n" +
             "Vuoi sovrascriverlo comunque? (Verrà creata una copia di backup automatica sul cloud)."
           );
           if (!okLess) { setCloud({ type: "", text: "" }); return; }
