@@ -1003,12 +1003,59 @@ function VolleyScout() {
   };
   const saveCloud = async () => {
     if (!supabaseClient) { setCloud({ type: "err", text: "Libreria Cloud non caricata: serve connessione." }); return; }
-    setCloud({ type: "busy", text: "Salvataggio in corso…" });
+    setCloud({ type: "busy", text: "Controllo stato cloud…" });
     try {
+      const { data: existing, error: readErr } = await supabaseClient.from(CLOUD_TABLE).select("data, updated_at").eq("id", CLOUD_ID).maybeSingle();
+      if (readErr) throw readErr;
+
+      if (existing && existing.data) {
+        const remCur = existing.data.current || {};
+        const remAct = Array.isArray(remCur.actions) ? remCur.actions.length : 0;
+        const remRal = Array.isArray(remCur.rallies) ? remCur.rallies.length : 0;
+        const remArch = Array.isArray(existing.data.archive) ? existing.data.archive.length : 0;
+        const locAct = actions.length;
+        const locRal = rallies.length;
+        const locArch = archive.length;
+        const whenStr = new Date(existing.updated_at || existing.data.savedAt || Date.now()).toLocaleString("it-IT");
+
+        const localIsEmpty = locAct === 0 && locRal === 0 && locArch === 0;
+        const remoteHasData = remAct > 0 || remRal > 0 || remArch > 0;
+
+        if (localIsEmpty && remoteHasData) {
+          const okEmpty = window.confirm(
+            "⚠️ ATTENZIONE: questo dispositivo è VUOTO (0 azioni, 0 scambi, archivio vuoto), mentre sul Cloud c'è un salvataggio del " + whenStr +
+            " (" + remAct + " azioni, " + remRal + " scambi, " + remArch + " partite in archivio).
+
+" +
+            "Premi ANNULLA e clicca prima '🔄 Carica da Cloud' per non perdere i dati!
+" +
+            "Vuoi davvero sovrascrivere tutto con una partita vuota?"
+          );
+          if (!okEmpty) { setCloud({ type: "", text: "" }); return; }
+        } else if (remoteHasData && (locAct + locRal < remAct + remRal || locArch < remArch)) {
+          const okLess = window.confirm(
+            "⚠️ Sul Cloud c'è un salvataggio del " + whenStr + " con più dati (" + remAct + " azioni, " + remRal + " scambi, " + remArch +
+            " in archivio) rispetto a questo dispositivo (" + locAct + " azioni, " + locRal + " scambi, " + locArch + " in archivio).
+
+" +
+            "Vuoi sovrascriverlo comunque? (Verrà creata una copia di backup automatica sul cloud)."
+          );
+          if (!okLess) { setCloud({ type: "", text: "" }); return; }
+        }
+
+        /* Backup automatico della versione precedente prima di sovrascrivere */
+        await supabaseClient.from(CLOUD_TABLE).upsert({
+          id: CLOUD_ID + "_backup",
+          data: { ...existing.data, backedUpAt: new Date().toISOString() },
+          updated_at: existing.updated_at || new Date().toISOString(),
+        });
+      }
+
+      setCloud({ type: "busy", text: "Salvataggio in corso…" });
       const now = new Date().toISOString();
       const { error } = await supabaseClient.from(CLOUD_TABLE).upsert({ id: CLOUD_ID, data: { app: "VolleyScout", version: 4, savedAt: now, current: snapshot(), archive }, updated_at: now });
       if (error) throw error;
-      setCloud({ type: "ok", text: "Salvato alle " + hhmm(now) });
+      setCloud({ type: "ok", text: "Salvato alle " + hhmm(now) + " (backup OK)" });
     } catch (e) { setCloud({ type: "err", text: cloudErr(e) }); }
   };
   const loadCloud = async () => {
