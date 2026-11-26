@@ -217,11 +217,10 @@ async function loadShortPayload(prefix, code) {
 function parseReportObj(d) {
   if (!d || typeof d !== "object") return { error: true };
   const actions = (Array.isArray(d.a) ? d.a : [])
-    .map((x, i) => ({ id: i, time: Math.max(0, Number(x[0]) || 0), skill: SKILLS[x[1]], result: x[2], aiFlag: x[3] === 1 || x[3] === true }))
+    .map((x, i) => ({ id: i, time: Math.max(0, Number(x[0]) || 0), skill: SKILLS[x[1]], result: x[2] }))
     .filter((a) => a.skill && RESULT_TEXT[a.result])
     .sort((a, b) => a.time - b.time);
   const vt = parseFloat(d.vt);
-  const sets = d.st && typeof d.st === "object" && !Array.isArray(d.st) ? d.st : {};
   return {
     number: d.n,
     name: String(d.nm || "Giocatore"),
@@ -229,9 +228,6 @@ function parseReportObj(d) {
     voto: isNaN(vt) ? null : vt,
     forza: String(d.f || ""),
     consiglio: String(d.c || ""),
-    bestSituation: String(d.bs || ""),
-    worstSituation: String(d.ws || ""),
-    sets,
     videoId: /^[\w-]{11}$/.test(d.vid || "") ? d.vid : null,
     actions,
   };
@@ -242,14 +238,11 @@ function parseMatchObj(d) {
   return {
     players: d.p.map((x, i) => {
       const vt = parseFloat(x.vt), k = Array.isArray(x.k) ? x.k : [];
-      const sets = x.st && typeof x.st === "object" && !Array.isArray(x.st) ? x.st : {};
       return {
         id: i, number: x.n, name: String(x.nm || "Giocatore"), role: String(x.r || ""), voto: isNaN(vt) ? null : vt,
-        forza: String(x.f || ""), consiglio: String(x.c || ""),
-        bestSituation: String(x.bs || ""), worstSituation: String(x.ws || ""), sets,
-        videoId: vid,
+        forza: String(x.f || ""), consiglio: String(x.c || ""), videoId: vid,
         kpi: k.length ? { n: k[0], tpi: k[1], net: k[2], ret: k[3], pps: k[4], res: k[5], qr: k[6], conv: k[7], setter: k[8] === 1 } : null,
-        actions: (Array.isArray(x.a) ? x.a : []).map((y, j) => ({ id: j, time: Math.max(0, Number(y[0]) || 0), skill: SKILLS[y[1]], result: y[2], aiFlag: y[3] === 1 || y[3] === true })).filter((a) => a.skill && RESULT_TEXT[a.result]).sort((a, b) => a.time - b.time),
+        actions: (Array.isArray(x.a) ? x.a : []).map((y, j) => ({ id: j, time: Math.max(0, Number(y[0]) || 0), skill: SKILLS[y[1]], result: y[2] })).filter((a) => a.skill && RESULT_TEXT[a.result]).sort((a, b) => a.time - b.time),
       };
     }),
   };
@@ -258,18 +251,15 @@ function parseMatchObj(d) {
 /* Il link contiene SOLO i dati del singolo giocatore. Mai la API key. */
 async function buildReportLink(p, r, videoId) {
   const payload = {
-    v: 2,
+    v: 1,
     n: p.number,
     nm: p.name,
     r: p.role,
     vt: r ? r.voto : null,
     f: r ? r.forza : "",
     c: r ? r.consiglio : "",
-    bs: r && r.bestSituation ? r.bestSituation : "",
-    ws: r && r.worstSituation ? r.worstSituation : "",
-    st: r && r.sets ? r.sets : {},
     vid: videoId || "",
-    a: p.actions.map((a) => [a.time, SKILLS.indexOf(a.skill), a.result, a.aiFlag ? 1 : 0]),
+    a: p.actions.map((a) => [a.time, SKILLS.indexOf(a.skill), a.result]),
   };
   const base = basePageUrl();
   const code = await saveShortPayload("rep", payload);
@@ -372,18 +362,10 @@ function fullStats(roster, stats, kpi) {
 
 async function buildMatchLink(ps, reports, kpiFn, videoId) {
   const payload = {
-    v: 3, vid: videoId || "",
+    v: 2, vid: videoId || "",
     p: ps.map((p) => {
       const r = reports[p.key], k = kpiFn(p);
-      return {
-        n: p.number, nm: p.name, r: p.role,
-        vt: r ? r.voto : null, f: r ? r.forza : "", c: r ? r.consiglio : "",
-        bs: r && r.bestSituation ? r.bestSituation : "",
-        ws: r && r.worstSituation ? r.worstSituation : "",
-        st: r && r.sets ? r.sets : {},
-        k: [k.n, k.tpi, k.net, k.ret, k.pps, k.res, k.qr, k.conv, k.setter ? 1 : 0],
-        a: p.actions.map((a) => [a.time, SKILLS.indexOf(a.skill), a.result, a.aiFlag ? 1 : 0])
-      };
+      return { n: p.number, nm: p.name, r: p.role, vt: r ? r.voto : null, f: r ? r.forza : "", c: r ? r.consiglio : "", k: [k.n, k.tpi, k.net, k.ret, k.pps, k.res, k.qr, k.conv, k.setter ? 1 : 0], a: p.actions.map((a) => [a.time, SKILLS.indexOf(a.skill), a.result]) };
     }),
   };
   const base = basePageUrl();
@@ -548,6 +530,95 @@ function playerKpi(p, k, setNo) {
 }
 const kpiTxt = (v) => "Minutaggio " + v.n + " scambi, TPI " + pctTxt(v.tpi) + ", Saldo " + (v.net > 0 ? "+" : "") + v.net;
 
+/* ================= SINERGIE & INTESE (motore di calcolo) ================= */
+const SYN_SEP = "§";
+const RECV_ROLES = ["Schiacciatore", "Libero"];
+function buildRoleMap(sources) {
+  const m = {};
+  sources.forEach((s) => {
+    (s.roster || []).forEach((r) => { if (r && r.role) m[r.number + "|" + r.name] = r.role; });
+    (s.actions || []).forEach((a) => { if (a && a.role && !m[a.number + "|" + a.name]) m[a.number + "|" + a.name] = a.role; });
+  });
+  return m;
+}
+/* sources: [{ rallies, actions, roster }] (una per partita); setNo: "all" o 1..5 (solo per la singola partita) */
+function computeSynergies(sources, setNo) {
+  const roleMap = buildRoleMap(sources);
+  const P = {}, pairs = {}, sa = {}, rp = {}, lu = {};
+  const pl = (k) => P[k] || (P[k] = { n: 0, w: 0, soN: 0, soW: 0 });
+  const bump = (o, won, isSO) => { o.n++; if (won) o.w++; if (isSO) { o.soN++; if (won) o.soW++; } else { o.bpN++; if (won) o.bpW++; } };
+  const base = () => ({ n: 0, w: 0, soN: 0, soW: 0, bpN: 0, bpW: 0 });
+  sources.forEach((src) => {
+    const rs = (src.rallies || []).filter((r) => inSet(r, setNo));
+    const acts = (src.actions || []).filter((a) => inSet(a, setNo));
+    const byR = {};
+    acts.forEach((a) => { if (a.rallyId == null) return; (byR[a.rallyId] = byR[a.rallyId] || []).push(a); });
+    rs.forEach((r) => {
+      const L = Array.from(new Set(r.lineup || [])).sort();
+      if (!L.length) return;
+      const won = !!r.won, isSO = !r.serving;
+      L.forEach((k) => { const p = pl(k); p.n++; if (won) p.w++; if (isSO) { p.soN++; if (won) p.soW++; } });
+      for (let i = 0; i < L.length; i++) for (let j = i + 1; j < L.length; j++) {
+        const id = L[i] + SYN_SEP + L[j];
+        const q = pairs[id] || (pairs[id] = { a: L[i], b: L[j], ...base() });
+        bump(q, won, isSO);
+      }
+      if (L.length === 6) { const id = L.join(SYN_SEP); const q = lu[id] || (lu[id] = { keys: L, ...base() }); bump(q, won, isSO); }
+      const ra = (byR[r.id] || []).slice().sort((x, y) => (x.time - y.time) || (x.id - y.id));
+      /* Coppie di ricezione */
+      if (isSO) {
+        const rec = L.filter((k) => RECV_ROLES.includes(roleMap[k]));
+        const recs = ra.filter((a) => a.skill === "Ricezione");
+        for (let i = 0; i < rec.length; i++) for (let j = i + 1; j < rec.length; j++) {
+          const id = rec[i] + SYN_SEP + rec[j];
+          const q = rp[id] || (rp[id] = { a: rec[i], b: rec[j], n: 0, w: 0, rt: 0, rp: 0, rk: 0 });
+          q.n++; if (won) q.w++;
+          recs.forEach((a) => { q.rt++; if (a.result === "#") { q.rk++; q.rp++; } else if (a.result === "+") q.rp++; });
+        }
+      }
+      /* Asse Palleggiatore - Attaccante */
+      const firstAl = ra.find((a) => a.skill === "Alzata");
+      let lastAl = null;
+      ra.forEach((a) => {
+        if (a.skill === "Alzata") { lastAl = a; return; }
+        if (a.skill !== "Attacco") return;
+        const al = lastAl || firstAl;
+        if (!al) return;
+        const pk = al.number + "|" + al.name, ak = a.number + "|" + a.name, id = pk + SYN_SEP + ak;
+        const q = sa[id] || (sa[id] = { p: pk, a: ak, tot: 0, c: { "#": 0, "+": 0, "-": 0, "/": 0, "=": 0 }, hN: 0, hc: { "#": 0, "+": 0, "-": 0, "/": 0, "=": 0 } });
+        q.tot++; q.c[a.result] += 1;
+        if (al.result === "-") { q.hN++; q.hc[a.result] += 1; }
+      });
+    });
+  });
+  const pairList = Object.keys(pairs).map((id) => {
+    const q = pairs[id], A = P[q.a], B = P[q.b];
+    const nw = (A.n - q.n) + (B.n - q.n), ww = (A.w - q.w) + (B.w - q.w);
+    const soNw = (A.soN - q.soN) + (B.soN - q.soN), soWw = (A.soW - q.soW) + (B.soW - q.soW);
+    const win = q.n ? (q.w / q.n) * 100 : null, so = q.soN ? (q.soW / q.soN) * 100 : null;
+    return {
+      ...q, l: q.n - q.w, net: q.w - (q.n - q.w), winPct: pct(q.w, q.n), soPct: pct(q.soW, q.soN), bpPct: pct(q.bpW, q.bpN),
+      delta: win !== null && nw > 0 ? Math.round(win - (ww / nw) * 100) : null,
+      deltaSo: so !== null && soNw > 0 ? Math.round(so - (soWw / soNw) * 100) : null,
+    };
+  });
+  const effOf = (c, t) => (t ? pct(c["#"] - c["="] - 0.5 * c["/"], t) : null);
+  const saList = Object.keys(sa).map((id) => {
+    const q = sa[id];
+    return { ...q, pos: pct(q.c["#"] + q.c["+"], q.tot), eff: effOf(q.c, q.tot), pts: pct(q.c["#"], q.tot), hPos: pct(q.hc["#"] + q.hc["+"], q.hN), hEff: effOf(q.hc, q.hN) };
+  });
+  const rpList = Object.keys(rp).map((id) => {
+    const q = rp[id];
+    return { ...q, l: q.n - q.w, soPct: pct(q.w, q.n), recPos: pct(q.rp, q.rt), recPerf: pct(q.rk, q.rt) };
+  });
+  const luList = Object.keys(lu).map((id) => {
+    const q = lu[id];
+    return { ...q, l: q.n - q.w, net: q.w - (q.n - q.w), winPct: pct(q.w, q.n), soPct: pct(q.soW, q.soN), bpPct: pct(q.bpW, q.bpN) };
+  });
+  return { pairs: pairList, sa: saList, recv: rpList, lineups: luList, roleMap };
+}
+const keyLbl = (k) => { const i = k.indexOf("|"); return k.slice(0, i) + " " + k.slice(i + 1); };
+
 function playerDataText(p) {
   const parts = p.skills.map(
     (s) => `${s.skill} ${s.tot} (#${s["#"]} +${s["+"]} -${s["-"]} =${s["="]}, pos ${pctTxt(s.pos)}, eff ${pctTxt(s.eff)})`
@@ -568,19 +639,15 @@ function matchDataText(stats) {
   ].join("\n");
 }
 
-function buildPrompt(ps, rot, kpiFn, rallies) {
-  const playedSets = [1, 2, 3, 4, 5].filter((s) => rallies.some((r) => (r.set || 1) === s) || ps.some((p) => p.actions.some((a) => (a.set || 1) === s)));
+function buildPrompt(ps, rot, kpiFn, rallies, actions) {
   const L = [
-    "Sei un allenatore di pallavolo esperto. Ti passo i dati di scouting completi (globali e set per set) di una partita. Scrivi un report approfondito e la pagella di OGNI giocatore elencato (Libero incluso).",
+    "Sei un allenatore di pallavolo esperto. Ti passo i dati di scouting di una partita. Scrivi la pagella di OGNI giocatore elencato (Libero incluso).",
     "",
     "REGOLE:",
     "- voto da 4.0 a 10.0 (un decimale), pesato sul ruolo: conta soprattutto il fondamentale principale. Con pochi tocchi (meno di 5) sii prudente: voti vicini al 6.",
-    "- forza: UNA frase (max 25 parole) sul principale punto di forza mostrato in partita, basata sui numeri reali.",
+    "- forza: UNA frase (max 25 parole) sul punto di forza, basata sui numeri reali.",
     "- consiglio: UNA frase pratica (max 25 parole) su cosa lavorare in allenamento.",
-    "- bestSituation: 1-2 frasi specifiche che evidenziano DOVE/QUANDO ha reso al meglio (es. rotazione P1/P4, fondamentale, set specifico o azioni ⭐ in evidenza).",
-    "- worstSituation: 1-2 frasi specifiche che evidenziano la situazione/rotazione/fase o set in cui ha faticato o commesso più errori diretti (=).",
-    "- sets: oggetto con chiave il numero del set giocato dal giocatore (es. \"1\", \"2\") e valore un mini-report tecnico (max 30 parole) sull'andamento in quel set (tocchi, fondamentali chiave, continuità, rotazioni/errori).",
-    "- Non inventare dati assenti. Tono diretto, analitico e motivante, in italiano.",
+    "- Non inventare dati assenti. Tono diretto e motivante, in italiano.",
     "- I / (Murati / Merito Avversario) NON sono errori: NON penalizzare il voto per i / subiti. Penalizza solo gli errori diretti (=).",
     "- Per il Palleggiatore il TPI non c'è (ridondante): valutalo ESCLUSIVAMENTE su Qualità/Efficienza di Alzata, Difesa, Battuta, Saldo ± e rendimento nelle rotazioni P1–P6.",
     "",
@@ -588,72 +655,50 @@ function buildPrompt(ps, rot, kpiFn, rallies) {
     "FONDAMENTALI CHE CONTANO PER RUOLO:",
   ];
   Array.from(new Set(ps.map((p) => p.role))).forEach((r) => L.push("- " + r + ": " + (ROLE_FOCUS[r] || "tutti")));
-  L.push("", "RENDIMENTO PER ROTAZIONE (PARTITA):");
+  L.push("", "RENDIMENTO PER ROTAZIONE:");
   for (let n = 1; n <= 6; n++) {
     const x = rot[n];
     if (x && x.w + x.l > 0) L.push(`P${n}: ${x.w + x.l} scambi, ${x.w} vinti-${x.l} persi, saldo ${x.w - x.l > 0 ? "+" : ""}${x.w - x.l}, Side-Out ${pctTxt(pct(x.soW, x.soN))}, Break Point ${pctTxt(pct(x.bpW, x.bpN))}`);
   }
+  try {
+    const syn = computeSynergies([{ rallies, actions: actions || [], roster: ps.map((p) => ({ number: p.number, name: p.name, role: p.role })) }], "all");
+    const MINS = 3, sl = [];
+    const pr = syn.pairs.filter((q) => q.n >= MINS).sort((a, b) => (b.net - a.net) || ((b.delta || 0) - (a.delta || 0)));
+    const dTxt = (d) => (d === null ? "n/d" : (d > 0 ? "+" : "") + d + "%");
+    const pTxt = (q) => `${keyLbl(q.a)} + ${keyLbl(q.b)}: ${q.n} scambi insieme, saldo ${q.net > 0 ? "+" : ""}${q.net}, vinti ${pctTxt(q.winPct)}, Side-Out ${pctTxt(q.soPct)}, Break Point ${pctTxt(q.bpPct)}, delta vs separati ${dTxt(q.delta)}`;
+    if (pr.length) {
+      pr.slice(0, 3).forEach((q, i) => sl.push(`- Coppia top ${i + 1}: ` + pTxt(q)));
+      const w = pr[pr.length - 1];
+      if (pr.length > 3 || w.net < 0) sl.push("- Coppia più critica: " + pTxt(w));
+    }
+    const sa = syn.sa.filter((x) => x.tot >= MINS).sort((a, b) => ((b.eff === null ? -999 : b.eff) - (a.eff === null ? -999 : a.eff)) || (b.tot - a.tot));
+    const saTxt = (x) => `alzatore ${keyLbl(x.p)} → attaccante ${keyLbl(x.a)}: ${x.tot} palloni, Pos ${pctTxt(x.pos)}, Eff ${pctTxt(x.eff)}, punti ${x.c["#"]}` + (x.hN ? `, su alzate difficili (-) ${x.hN}: Pos ${pctTxt(x.hPos)} Eff ${pctTxt(x.hEff)}` : "");
+    if (sa.length) {
+      sl.push("- Migliore intesa Palleggiatore-Attaccante: " + saTxt(sa[0]));
+      if (sa.length > 1) sl.push("- Intesa più faticosa Palleggiatore-Attaccante: " + saTxt(sa[sa.length - 1]));
+    }
+    if (sl.length) {
+      L.push("", `SINERGIE CHIAVE DELLA PARTITA (solo combinazioni con almeno ${MINS} scambi/palloni; campioni piccoli, usare con prudenza). Usale per aggiungere in "forza" o "consiglio" con chi il giocatore ha reso meglio o ha faticato di più, solo se il dato lo riguarda:`);
+      sl.forEach((x) => L.push(x));
+    }
+  } catch (e) {}
   L.push("", "GIOCATORI:");
   ps.forEach((p) => {
     const v = kpiFn(p);
     L.push(`[ID ${p.rid != null ? p.rid : p.number}] n.${p.number} ${p.name} | ${p.role} | Minutaggio: ${v.n} scambi (~${v.setEq} set eq.)`);
-    L.push("  Statistiche globali: " + (p.skills.length ? p.skills.map((s) => `${s.skill} ${s.tot} (#${s["#"]} +${s["+"]} -${s["-"]} /${s["/"]} =${s["="]}, Pos ${pctTxt(s.pos)}, Eff ${pctTxt(s.eff)})`).join("; ") : "nessuna azione taggata"));
+    L.push("  Statistiche: " + (p.skills.length ? p.skills.map((s) => `${s.skill} ${s.tot} (#${s["#"]} +${s["+"]} -${s["-"]} =${s["="]}, Pos ${pctTxt(s.pos)}, Eff ${pctTxt(s.eff)})`).join("; ") : "nessuna azione taggata"));
     L.push(`  Murati / Merito Avversario (/): ${p.total["/"]} | Errori diretti (=): ${p.total["="]}  [i / NON penalizzano il voto]`);
     const rest = `Net ± ${v.net > 0 ? "+" : ""}${v.net} | Ball Retention ${pctTxt(v.ret)} | Punti/Set ${v.pps} | Resilienza ${pctTxt(v.res)}`;
-    L.push("  KPI globali: " + (v.setter ? `Qualità Regia (# + +) ${pctTxt(v.qr)} | Conversione Punti su Alzata ${pctTxt(v.conv)} | ` : `TPI ${pctTxt(v.tpi)} | `) + rest);
-
-    const setLines = [];
-    playedSets.forEach((sNo) => {
-      const sActs = p.actions.filter((a) => (a.set || 1) === sNo);
-      const sRals = rallies.filter((r) => (r.set || 1) === sNo && r.lineup.includes(p.key));
-      if (!sActs.length && !sRals.length) return;
-      const totC = emptyCounts();
-      const bySk = {};
-      sActs.forEach((a) => {
-        totC[a.result] += 1; totC.tot += 1;
-        if (!bySk[a.skill]) bySk[a.skill] = emptyCounts();
-        bySk[a.skill][a.result] += 1; bySk[a.skill].tot += 1;
-      });
-      const dTot = derive(totC);
-      const sNet = sRals.reduce((acc, r) => acc + (r.won ? 1 : -1), 0);
-      const skStr = SKILLS.filter((sk) => bySk[sk]).map((sk) => {
-        const ds = derive(bySk[sk]);
-        return `${sk} ${ds.tot} (#${ds["#"]} +${ds["+"]} -${ds["-"]} /${ds["/"]} =${ds["="]}, Pos ${pctTxt(ds.pos)}, Eff ${pctTxt(ds.eff)})`;
-      }).join(", ");
-      setLines.push(`    - Set ${sNo}: ${sRals.length} scambi (Saldo ${sNet > 0 ? "+" : ""}${sNet}), ${totC.tot} tocchi (Pos ${pctTxt(dTot.pos)}, Eff ${pctTxt(dTot.eff)}) -> ${skStr || "solo presenza in campo"}`);
-    });
-    if (setLines.length) {
-      L.push("  Dettaglio Set per Set:");
-      setLines.forEach((sl) => L.push(sl));
+    L.push("  KPI: " + (v.setter ? `Qualità Regia (# + +) ${pctTxt(v.qr)} | Conversione Punti su Alzata ${pctTxt(v.conv)} | ` : `TPI ${pctTxt(v.tpi)} | `) + rest);
+    if (v.setter) {
+      const rr = [];
+      for (let n = 1; n <= 6; n++) { const w = rallies.filter((r) => r.rot === n && r.lineup.includes(p.key)); if (w.length) { const s = w.filter((r) => r.won).length * 2 - w.length; rr.push(`P${n} ${s > 0 ? "+" : ""}${s} (${w.length} scambi)`); } }
+      L.push("  Saldo per rotazione con lui in campo: " + (rr.join("; ") || "n/d"));
     }
-
-    const rr = [];
-    for (let n = 1; n <= 6; n++) {
-      const w = rallies.filter((r) => r.rot === n && r.lineup.includes(p.key));
-      if (w.length) {
-        const s = w.filter((r) => r.won).length * 2 - w.length;
-        rr.push(`P${n} ${s > 0 ? "+" : ""}${s} (${w.length} scambi)`);
-      }
-    }
-    L.push("  Saldo per rotazione con lui in campo: " + (rr.join("; ") || "n/d"));
-
-    const starred = p.actions.filter((a) => a.aiFlag).sort((a, b) => a.time - b.time);
-    L.push("  Azioni segnate con ⭐ dall'allenatore: " + (starred.length ? starred.map((a) => {
-      const rr = a.rot || (rallies.find((r) => r.id === a.rallyId) || {}).rot;
-      return `Set ${a.set || 1} ${a.skill} ${a.result} (${rr ? "P" + rr : "P?"}, ${a.time > 0 ? fmt(a.time) : "live"})`;
-    }).join("; ") : "nessuna"));
-
     const errs = p.actions.filter((a) => a.result === "=").sort((a, b) => a.time - b.time);
-    L.push("  Errori diretti (=) con set, rotazione e tempo: " + (errs.length ? errs.map((a) => {
-      const rr = a.rot || (rallies.find((r) => r.id === a.rallyId) || {}).rot;
-      return `Set ${a.set || 1} ${a.skill} (${rr ? "P" + rr : "P?"}, ${a.time > 0 ? fmt(a.time) : "live"})`;
-    }).join("; ") : "nessuno"));
+    L.push("  Errori diretti (=) con rotazione e tempo: " + (errs.length ? errs.map((a) => { const rr = a.rot || (rallies.find((r) => r.id === a.rallyId) || {}).rot; return `${a.skill} (${rr ? "P" + rr : "P?"}, ${a.time > 0 ? fmt(a.time) : "live"})`; }).join("; ") : "nessuno"));
   });
-  L.push(
-    "",
-    'Rispondi ESCLUSIVAMENTE con un JSON valido (nessun testo extra, nessun markdown), usando come chiave l\'ID indicato tra [ID ...]:',
-    '{ "ID_GIOCATORE": { "voto": 7.5, "forza": "...", "consiglio": "...", "bestSituation": "...", "worstSituation": "...", "sets": { "1": "...", "2": "..." } } }'
-  );
+  L.push("", 'Rispondi ESCLUSIVAMENTE con un JSON valido (nessun testo extra, nessun markdown), usando come chiave l\'ID indicato tra [ID ...]:', '{ "ID_GIOCATORE": { "voto": 7.5, "forza": "...", "consiglio": "..." } }');
   return L.join("\n");
 }
 
@@ -686,38 +731,28 @@ function whatsappText(p, r, videoId) {
   const L = [`*Pagella - ${p.name} (n. ${p.number})*`, `Ruolo: ${p.role}`];
   if (r) {
     L.push(`Voto: *${r.voto.toFixed(1)}*`, `✅ Punto di forza: ${r.forza}`, `🎯 Da migliorare: ${r.consiglio}`);
-    if (r.bestSituation) L.push(`🔥 Dove hai reso al meglio: ${r.bestSituation}`);
-    if (r.worstSituation) L.push(`⚠️ Situazione critica: ${r.worstSituation}`);
-    const setKeys = r.sets && typeof r.sets === "object" ? Object.keys(r.sets).filter((k) => r.sets[k]) : [];
-    if (setKeys.length) {
-      L.push("", "📋 Andamento Set per Set:");
-      setKeys.sort((a, b) => Number(a) - Number(b)).forEach((k) => L.push(`• Set ${k}: ${r.sets[k]}`));
-    }
   }
-  L.push("", "📊 Numeri della partita:");
+  L.push("📊 Numeri della partita:");
   p.skills.forEach((s) => L.push(`• ${s.skill}: ${s.tot} tocchi (# ${s["#"]}, + ${s["+"]}, - ${s["-"]}, / ${s["/"]}, = ${s["="]}) - Pos ${pctTxt(s.pos)}, Eff ${pctTxt(s.eff)}`));
   if (videoId && p.actions.length) {
     L.push("", "🎬 Rivedi le tue azioni:");
     p.actions
       .slice()
       .sort((a, b) => a.time - b.time)
-      .forEach((a) => L.push(`• ${a.aiFlag ? "⭐ " : ""}${fmt(a.time)} ${a.skill} ${a.result} → https://youtu.be/${videoId}?t=${Math.floor(a.time)}`));
+      .forEach((a) => L.push(`• ${fmt(a.time)} ${a.skill} ${a.result} → https://youtu.be/${videoId}?t=${Math.floor(a.time)}`));
   }
   return L.join("\n");
 }
 
 function PlayerCard({ p, report, videoId, onClip, onCopy, onLink, onGen, busy, err, kpi }) {
   const nFlag = p.actions.filter((a) => a.aiFlag).length;
-  const setKeys = report && report.sets && typeof report.sets === "object"
-    ? Object.keys(report.sets).filter((k) => report.sets[k]).sort((a, b) => Number(a) - Number(b))
-    : [];
   return (
     <article className="flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-900 p-4">
       <header className="flex items-center gap-3">
         <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-2xl font-extrabold">{p.number}</div>
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-lg font-bold leading-tight">{p.name}</h3>
-          <p className="text-sm text-slate-400">{p.role} · {p.total.tot} tocchi · ⭐ {nFlag} in evidenza</p>
+          <p className="text-sm text-slate-400">{p.role} · {p.total.tot} tocchi · ⭐ {nFlag}/6</p>
         </div>
         {report ? (
           <div className={`rounded-xl px-3 py-2 text-3xl font-black leading-none ${gradeColor(report.voto)}`}>{report.voto.toFixed(1)}</div>
@@ -758,56 +793,20 @@ function PlayerCard({ p, report, videoId, onClip, onCopy, onLink, onGen, busy, e
       </div>
 
       {report && (
-        <div className="space-y-2.5 text-sm">
+        <div className="space-y-2 text-sm">
           <p><span className="font-bold text-emerald-400">Punto di forza. </span>{report.forza}</p>
           <p><span className="font-bold text-orange-300">Consiglio tecnico. </span>{report.consiglio}</p>
-          {report.bestSituation && (
-            <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/30 p-2.5 text-xs leading-relaxed">
-              <span className="font-bold text-emerald-300">🔥 Dove ha reso al meglio: </span>
-              <span className="text-slate-200">{report.bestSituation}</span>
-            </div>
-          )}
-          {report.worstSituation && (
-            <div className="rounded-lg border border-rose-500/30 bg-rose-950/30 p-2.5 text-xs leading-relaxed">
-              <span className="font-bold text-rose-300">⚠️ Situazione critica: </span>
-              <span className="text-slate-200">{report.worstSituation}</span>
-            </div>
-          )}
-          {setKeys.length > 0 && (
-            <div className="space-y-1.5 rounded-lg border border-slate-800 bg-slate-950/60 p-2.5">
-              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">📋 Report Set per Set</div>
-              {setKeys.map((k) => (
-                <div key={k} className="flex items-start gap-2 text-xs leading-snug">
-                  <span className="mt-0.5 shrink-0 rounded bg-orange-500/20 px-1.5 py-0.5 font-mono text-[10px] font-bold text-orange-300">Set {k}</span>
-                  <span className="text-slate-200">{report.sets[k]}</span>
-                </div>
-              ))}
-            </div>
-          )}
           {report.clips > 0 && <p className="text-xs text-slate-500">🎬 Voto basato anche sull'analisi video di {report.clips} clip.</p>}
         </div>
       )}
 
-      {p.actions.length > 0 && (
+      {videoId && (
         <div>
-          <h4 className="mb-1 text-xs font-semibold text-slate-400">
-            {videoId ? "Rivedi le clip" : "Azioni registrate"} {nFlag > 0 && <span className="text-amber-300">(⭐ {nFlag} in evidenza)</span>}
-          </h4>
-          <div className="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">
+          <h4 className="mb-1 text-xs font-semibold text-slate-400">Rivedi le clip</h4>
+          <div className="flex max-h-24 flex-wrap gap-1 overflow-y-auto">
             {p.actions.map((a) => (
-              <button
-                key={a.id}
-                onClick={() => videoId && onClip(a.time)}
-                disabled={!videoId}
-                title={a.aiFlag ? "Clip stellata in evidenza per AI" : "Rivedi clip"}
-                className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs transition ${
-                  a.aiFlag
-                    ? "border border-amber-400/70 bg-amber-500/20 text-amber-100 shadow-[0_0_8px_rgba(251,191,36,0.2)] hover:bg-amber-500/30"
-                    : "bg-slate-800 hover:bg-slate-700"
-                }`}
-              >
-                {a.aiFlag && <span className="text-xs">⭐</span>}
-                {videoId && <Play className="h-3 w-3" />}
+              <button key={a.id} onClick={() => onClip(a.time)} className="flex items-center gap-1 rounded-md bg-slate-800 px-2 py-1 text-xs hover:bg-slate-700">
+                <Play className="h-3 w-3" />
                 <span className="font-mono">{fmt(a.time)}</span> {a.skill}
                 <b className={RESULT_TEXT[a.result]}>{a.result}</b>
               </button>
@@ -846,7 +845,7 @@ const TONE = {
 /* soglie indicative [verde, azzurro, giallo]; sotto = rosso */
 const THRESH = {
   pos: [70, 55, 40], eff: [35, 20, 5], so: [65, 55, 45], bp: [45, 35, 25],
-  tpi: [30, 10, -10], conv: [60, 50, 40], ret: [95, 90, 85], res: [60, 45, 30],
+  tpi: [30, 10, -10], conv: [60, 50, 40], ret: [95, 90, 85], res: [60, 45, 30], win: [60, 50, 40], perf: [45, 35, 25],
 };
 const toneOf = (v, kind) => {
   if (v === null || v === undefined || isNaN(v)) return "slate";
@@ -886,6 +885,11 @@ function Delta({ d, dec, inv }) {
   if (r === 0) return <span className="ml-1 text-[10px] text-slate-500">=</span>;
   const good = inv ? r < 0 : r > 0;
   return <span className={"ml-1 text-[10px] font-bold " + (good ? "text-emerald-400" : "text-rose-400")}>{r > 0 ? "+" : "−"}{Math.abs(r).toFixed(dec || 0)}</span>;
+}
+
+function DeltaPct({ d, plain }) {
+  if (d === null || d === undefined || isNaN(d)) return <span className="text-[11px] text-slate-500">n/d</span>;
+  return <span className={(plain ? "text-sm " : "text-[11px] ") + "font-bold " + (d > 0 ? "text-emerald-400" : d < 0 ? "text-rose-400" : "text-slate-400")}>{plain ? "" : "Δ "}{d > 0 ? "+" : d < 0 ? "−" : "±"}{Math.abs(d)}%</span>;
 }
 
 /* Grafico a linee SVG nativo (nessuna libreria). mode: pct | grade | auto0 */
@@ -1024,9 +1028,19 @@ function AnalysisDashboard({ actions, rallies, roster, reports, archive, game })
     const dup = curHas && arch.some((m) => matchSig(m.data) === matchSig(curData));
     const list = arch.slice();
     if (curHas && !dup) list.push({ id: "cur", name: "Partita corrente", date: new Date().toISOString(), data: curData });
-    return { list: list.map((m) => analyzeMatch(m, roster)), dup };
+    return { list: list.map((m) => analyzeMatch(m, roster)), dup, raw: list };
   }, [archive, actions, rallies, roster, reports, game]);
   const perMatch = matchInfo.list;
+  const [synScope, setSynScope] = useAn("synScope", "match");
+  const [synMin, setSynMin] = useAn("synMin", 3);
+  const [synSetter, setSynSetter] = useAn("synSetter", "");
+  const [synSortK, setSynSortK] = useAn("synSortK", "net");
+  const [synSortDir, setSynSortDir] = useAn("synSortDir", -1);
+  const syn = React.useMemo(() => {
+    if (view !== "syn") return null;
+    if (synScope === "match") return computeSynergies([{ rallies, actions, roster }], setSel);
+    return computeSynergies(matchInfo.raw.map((m) => ({ rallies: (m.data && m.data.rallies) || [], actions: (m.data && m.data.actions) || [], roster: (m.data && m.data.roster && m.data.roster.length ? m.data.roster : roster) })), "all");
+  }, [view, synScope, setSel, rallies, actions, roster, matchInfo]);
 
   const viewBtn = (k, lbl) => (
     <button key={k} onClick={() => setView(k)} className={"rounded-full px-4 py-2 text-sm font-bold " + (view === k ? "bg-orange-500 text-slate-950" : "bg-slate-800 text-slate-200 hover:bg-slate-700")}>{lbl}</button>
@@ -1036,8 +1050,184 @@ function AnalysisDashboard({ actions, rallies, roster, reports, archive, game })
     <div className="flex flex-wrap items-center gap-2">
       {viewBtn("match", "📊 Partita corrente")}
       {viewBtn("trend", "📈 Confronto Partite & Trend")}
+      {viewBtn("syn", "🤝 Sinergie & Intese")}
     </div>
   );
+
+  /* ========== VISTA 3: SINERGIE & INTESE ========== */
+  if (view === "syn") {
+    const minN = synMin;
+    const pairsF = syn.pairs.filter((q) => q.n >= minN);
+    const rankP = pairsF.slice().sort((a, b) => (b.net - a.net) || ((b.delta || 0) - (a.delta || 0)));
+    const top = rankP.filter((q) => q.net >= 0 || (q.delta !== null && q.delta > 0)).slice(0, 3);
+    const flop = rankP.slice().reverse().filter((q) => (q.net < 0 || (q.delta !== null && q.delta < 0)) && !top.includes(q)).slice(0, 3);
+    const nullLast = (x, y, dir) => { const xn = x === null || x === undefined, yn = y === null || y === undefined; if (xn && yn) return 0; if (xn) return 1; if (yn) return -1; return dir * (x - y); };
+    const sortedP = pairsF.slice().sort((a, b) => nullLast(a[synSortK], b[synSortK], synSortDir) || (b.n - a.n));
+    const toggleS = (k) => { if (synSortK === k) setSynSortDir(-synSortDir); else { setSynSortK(k); setSynSortDir(-1); } };
+    const thS = (k, lbl) => (<th className="p-2 text-right"><button onClick={() => toggleS(k)} className={"font-semibold hover:text-orange-300 " + (synSortK === k ? "text-orange-300" : "")}>{lbl}{synSortK === k ? (synSortDir > 0 ? " ▲" : " ▼") : ""}</button></th>);
+    const saF = syn.sa.filter((x) => x.tot >= minN);
+    const stTot = {};
+    saF.forEach((x) => { stTot[x.p] = (stTot[x.p] || 0) + x.tot; });
+    const setterKeys = Object.keys(stTot).sort((a, b) => stTot[b] - stTot[a]);
+    const curSetter = setterKeys.includes(synSetter) ? synSetter : setterKeys[0];
+    const saRows = saF.filter((x) => x.p === curSetter).sort((a, b) => b.tot - a.tot);
+    const recvF = syn.recv.filter((q) => q.n >= minN).sort((a, b) => b.n - a.n);
+    const luF = syn.lineups.filter((q) => q.n >= minN).sort((a, b) => (b.n - a.n) || (b.net - a.net));
+    const pill = (on) => "rounded-full px-3 py-1.5 text-sm font-semibold " + (on ? "bg-orange-500 text-slate-950" : "bg-slate-800 hover:bg-slate-700");
+    const netCls = (n) => (n > 0 ? "text-emerald-400" : n < 0 ? "text-rose-400" : "text-slate-400");
+    const PairLine = ({ q }) => (
+      <div className="flex items-center gap-2 rounded-lg bg-slate-950/40 p-2">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-semibold">{keyLbl(q.a)} + {keyLbl(q.b)}</div>
+          <div className="text-[11px] text-slate-400">{q.n} scambi · {q.w}–{q.l} · vinti {pctTxt(q.winPct)}</div>
+        </div>
+        <div className="text-right"><div className={"text-lg font-black tabular-nums " + netCls(q.net)}>{sgn(q.net)}</div><DeltaPct d={q.delta} /></div>
+      </div>
+    );
+    const MiniBar = ({ v, kind }) => (<div className="flex items-center justify-end gap-2"><span className={"tabular-nums " + TONE[toneOf(v, kind)].text}>{pctTxt(v)}</span><div className="w-14"><Bar v={v} kind={kind} h="h-2" /></div></div>);
+    const noData = syn.pairs.length === 0;
+    return (
+      <section className="mx-auto max-w-[1500px] space-y-4 p-4">
+        {head}
+
+        <div className={cardCls}>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+            <div>
+              <h2 className="mb-1 text-sm font-bold uppercase tracking-wide text-slate-400">Ambito</h2>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => setSynScope("match")} className={pill(synScope === "match")}>Partita corrente</button>
+                <button onClick={() => setSynScope("season")} className={pill(synScope === "season")}>Stagione intera (Archivio + Corrente)</button>
+              </div>
+            </div>
+            <div>
+              <h2 className="mb-1 text-sm font-bold uppercase tracking-wide text-slate-400">Minimo scambi/azioni insieme</h2>
+              <div className="flex flex-wrap gap-2">
+                {[1, 3, 8, 15, 25].map((n) => (<button key={n} onClick={() => setSynMin(n)} className={pill(synMin === n)}>{n === 1 ? "Tutti" : n + "+"}</button>))}
+              </div>
+            </div>
+          </div>
+          {synScope === "match" && (
+            <div className="mt-3">
+              <h2 className="mb-1 text-sm font-bold uppercase tracking-wide text-slate-400">Filtra per set</h2>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => setSetSel("all")} className={pill(setSel === "all")}>Tutti i Set</button>
+                {setsInfo.map((s) => (
+                  <button key={s.n} onClick={() => setSetSel(s.n)} className={pill(setSel === s.n) + (s.rn === 0 && s.na === 0 && setSel !== s.n ? " opacity-50" : "")}>Set {s.n}{s.rn > 0 ? " (" + s.w + "-" + s.l + ")" : ""}</button>
+                ))}
+              </div>
+            </div>
+          )}
+          <p className="mt-3 text-xs text-slate-400">{synScope === "season" ? "Aggregate " + matchInfo.raw.length + " partite (archivio + corrente non ancora salvata)." : "Dati della partita corrente" + (setSel === "all" ? "." : ", solo Set " + setSel + ".")} Con pochi scambi i numeri sono rumorosi: fidati dei dati con almeno 8–15 scambi insieme. Il Delta confronta le due persone insieme con il rendimento di ciascuna senza l'altra (punti percentuali di scambi vinti).</p>
+        </div>
+
+        {noData && <p className="rounded-xl bg-slate-900 p-6 text-center text-slate-400">Nessuno scambio registrato in questo ambito: chiudi qualche scambio con il sestetto in campo nella scheda Scouting.</p>}
+
+        {!noData && (<>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-xl border border-emerald-500/40 bg-slate-900 p-4">
+              <h3 className="mb-2 text-lg font-bold">🏆 Top coppie in campo</h3>
+              <div className="space-y-2">{top.map((q) => <PairLine key={q.a + q.b} q={q} />)}{top.length === 0 && <p className="text-sm text-slate-400">Nessuna coppia con saldo positivo (prova ad abbassare il minimo).</p>}</div>
+            </div>
+            <div className="rounded-xl border border-rose-500/40 bg-slate-900 p-4">
+              <h3 className="mb-2 text-lg font-bold">⚠️ Coppie più critiche</h3>
+              <div className="space-y-2">{flop.map((q) => <PairLine key={q.a + q.b} q={q} />)}{flop.length === 0 && <p className="text-sm text-slate-400">Nessuna coppia in negativo con questo campione.</p>}</div>
+            </div>
+          </div>
+
+          <div className={cardCls}>
+            <h3 className="mb-2 text-lg font-bold">Tutte le coppie ({sortedP.length})</h3>
+            <div className="max-h-[480px] overflow-auto">
+              <table className="w-full min-w-[760px] text-sm tabular-nums">
+                <thead className="sticky top-0 bg-slate-900 text-xs text-slate-400"><tr><th className="p-2 text-left">Coppia</th>{thS("n", "Scambi")}{thS("net", "Saldo ±")}{thS("winPct", "% Vinti")}{thS("soPct", "Side-Out %")}{thS("bpPct", "Break Pt %")}{thS("delta", "Delta sinergia")}</tr></thead>
+                <tbody>{sortedP.map((q) => (
+                  <tr key={q.a + q.b} className="border-t border-slate-800 text-right">
+                    <td className="p-2 text-left font-semibold"><span className="text-orange-300">{keyLbl(q.a)}</span> + <span className="text-orange-300">{keyLbl(q.b)}</span></td>
+                    <td className="p-2">{q.n}</td>
+                    <td className={"p-2 font-bold " + netCls(q.net)}>{sgn(q.net)}</td>
+                    <td className="p-2"><MiniBar v={q.winPct} kind="win" /></td>
+                    <td className="p-2"><MiniBar v={q.soPct} kind="so" /></td>
+                    <td className="p-2"><MiniBar v={q.bpPct} kind="bp" /></td>
+                    <td className="p-2"><DeltaPct d={q.delta} plain /></td>
+                  </tr>))}
+                </tbody>
+              </table>
+              {sortedP.length === 0 && <p className="p-4 text-center text-sm text-slate-400">Nessuna coppia con almeno {minN} scambi insieme.</p>}
+            </div>
+            <p className="mt-2 text-xs text-slate-500">Saldo ± = scambi vinti meno persi con entrambi in campo. Delta: + significa che insieme vincono più di quanto ciascuno vinca senza l'altro.</p>
+          </div>
+
+          <div className={cardCls}>
+            <h3 className="mb-2 text-lg font-bold">🎯 Chimica Palleggiatore – Attaccante</h3>
+            {setterKeys.length === 0 && <p className="text-sm text-slate-400">Nessuna combinazione alzata → attacco con almeno {minN} palloni. Servono azioni Alzata e Attacco taggate nello stesso scambio.</p>}
+            {setterKeys.length > 0 && (<>
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                {setterKeys.length > 1 ? setterKeys.map((k) => (<button key={k} onClick={() => setSynSetter(k)} className={pill(k === curSetter)}>{keyLbl(k)} <span className="text-[11px] opacity-70">({stTot[k]})</span></button>)) : (<span className="rounded-full bg-orange-500 px-3 py-1.5 text-sm font-semibold text-slate-950">{keyLbl(curSetter)}</span>)}
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[820px] text-sm tabular-nums">
+                  <thead className="text-xs text-slate-400"><tr><th className="p-2 text-left">Attaccante</th><th className="p-2 text-right">Alzate ricevute</th><th className="p-2 text-right">Punti #</th><th className="p-2 text-right">Positività %</th><th className="p-2 text-right">Efficienza %</th><th className="p-2 text-right">Alzate difficili (−)</th><th className="p-2 text-right">Pos % su difficili</th><th className="p-2 text-right">Eff % su difficili</th></tr></thead>
+                  <tbody>{saRows.map((x) => (
+                    <tr key={x.a} className="border-t border-slate-800 text-right">
+                      <td className="p-2 text-left font-semibold">{keyLbl(x.a)}</td>
+                      <td className="p-2">{x.tot}</td>
+                      <td className="p-2 text-emerald-400">{x.c["#"]} <span className="text-[10px] text-slate-500">({pctTxt(x.pts)})</span></td>
+                      <td className="p-2"><MiniBar v={x.pos} kind="pos" /></td>
+                      <td className="p-2"><MiniBar v={x.eff} kind="eff" /></td>
+                      <td className="p-2">{x.hN || "–"}</td>
+                      <td className="p-2">{x.hN ? <MiniBar v={x.hPos} kind="pos" /> : "–"}</td>
+                      <td className="p-2">{x.hN ? <MiniBar v={x.hEff} kind="eff" /> : "–"}</td>
+                    </tr>))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-2 text-xs text-slate-500">Ogni attacco è abbinato all'ultima alzata taggata prima di lui nello stesso scambio (se manca, alla prima alzata dello scambio). Alzata difficile = alzata del palleggiatore valutata −. Efficienza = (# − = − ½·/) ÷ attacchi.</p>
+            </>)}
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div className={cardCls}>
+              <h3 className="mb-2 text-lg font-bold">🛡️ Coppie di Ricezione</h3>
+              {recvF.length === 0 ? <p className="text-sm text-slate-400">Nessuna coppia di ricevitori (Schiacciatori/Libero) con almeno {minN} scambi in ricezione.</p> : (
+                <div className="max-h-[420px] overflow-auto">
+                  <table className="w-full min-w-[560px] text-sm tabular-nums">
+                    <thead className="sticky top-0 bg-slate-900 text-xs text-slate-400"><tr><th className="p-2 text-left">Ricevitori</th><th className="p-2 text-right">Scambi</th><th className="p-2 text-right">Ric. Pos %</th><th className="p-2 text-right">Perfetta %</th><th className="p-2 text-right">Side-Out %</th></tr></thead>
+                    <tbody>{recvF.map((q) => (
+                      <tr key={q.a + q.b} className="border-t border-slate-800 text-right">
+                        <td className="p-2 text-left font-semibold">{keyLbl(q.a)} + {keyLbl(q.b)}</td>
+                        <td className="p-2">{q.n} <span className="text-[10px] text-slate-500">({q.rt} ric.)</span></td>
+                        <td className="p-2"><MiniBar v={q.recPos} kind="pos" /></td>
+                        <td className="p-2"><MiniBar v={q.recPerf} kind="perf" /></td>
+                        <td className="p-2"><MiniBar v={q.soPct} kind="so" /></td>
+                      </tr>))}</tbody>
+                  </table>
+                </div>
+              )}
+              <p className="mt-2 text-xs text-slate-500">Scambi in ricezione con entrambi i ricevitori in campo. Pos % e Perfetta % sono su tutte le ricezioni di squadra in quegli scambi.</p>
+            </div>
+            <div className={cardCls}>
+              <h3 className="mb-2 text-lg font-bold">🏐 Rendimento Sestetti</h3>
+              {luF.length === 0 ? <p className="text-sm text-slate-400">Nessun sestetto con almeno {minN} scambi.</p> : (
+                <div className="max-h-[420px] overflow-auto">
+                  <table className="w-full min-w-[560px] text-sm tabular-nums">
+                    <thead className="sticky top-0 bg-slate-900 text-xs text-slate-400"><tr><th className="p-2 text-left">Sestetto</th><th className="p-2 text-right">Scambi</th><th className="p-2 text-right">V–P</th><th className="p-2 text-right">Saldo ±</th><th className="p-2 text-right">Side-Out %</th><th className="p-2 text-right">Break Pt %</th></tr></thead>
+                    <tbody>{luF.map((q) => (
+                      <tr key={q.keys.join("-")} className="border-t border-slate-800 text-right">
+                        <td className="p-2 text-left" title={q.keys.map(keyLbl).join(", ")}><span className="font-bold text-orange-300">{q.keys.map((k) => k.slice(0, k.indexOf("|"))).join(" · ")}</span><div className="text-[10px] text-slate-500">{q.keys.map((k) => k.slice(k.indexOf("|") + 1).split(" ").pop()).join(", ")}</div></td>
+                        <td className="p-2">{q.n}</td><td className="p-2">{q.w}–{q.l}</td>
+                        <td className={"p-2 font-bold " + netCls(q.net)}>{sgn(q.net)}</td>
+                        <td className="p-2"><MiniBar v={q.soPct} kind="so" /></td>
+                        <td className="p-2"><MiniBar v={q.bpPct} kind="bp" /></td>
+                      </tr>))}</tbody>
+                  </table>
+                </div>
+              )}
+              <p className="mt-2 text-xs text-slate-500">Sestetto = i 6 giocatori effettivi in campo (Libero incluso), a prescindere dalla rotazione.</p>
+            </div>
+          </div>
+        </>)}
+      </section>
+    );
+  }
 
   /* ========== VISTA 1: PARTITA CORRENTE ========== */
   if (view === "match") {
@@ -1688,7 +1878,7 @@ function VolleyScout() {
   const ps = fullStats(roster, stats, kpiData);
 
   /* --- Zero-API: copia dati+prompt -> incolla JSON di Claude --- */
-  const copyForChatAI = () => copyWithToast(buildPrompt(ps, kpiData.rot, kpiRow, rallies), "Dati e prompt copiati: incollali su Claude e riporta qui il JSON.", 3500);
+  const copyForChatAI = () => copyWithToast(buildPrompt(ps, kpiData.rot, kpiRow, rallies, actions), "Dati e prompt copiati: incollali su Claude e riporta qui il JSON.", 3500);
   const applyReports = () => {
     try {
       const clean = pasteText.replace(/```json|```/gi, "").trim();
@@ -1703,18 +1893,7 @@ function VolleyScout() {
         const r = roster.find((x) => String(x.id) === ks) || roster.find((x) => x.name.toLowerCase() === ks.toLowerCase()) || roster.find((x) => String(x.number) === ks.replace(/\D/g, ""));
         const v = parseFloat(String(o.voto).replace(",", "."));
         if (!r || isNaN(v)) return;
-        const rawSets = o.sets && typeof o.sets === "object" && !Array.isArray(o.sets) ? o.sets : {};
-        const cleanSets = {};
-        Object.keys(rawSets).forEach((sk) => { if (rawSets[sk]) cleanSets[String(sk)] = String(rawSets[sk]); });
-        next[r.number + "|" + r.name] = {
-          voto: Math.round(Math.min(10, Math.max(1, v)) * 10) / 10,
-          forza: String(o.forza || ""),
-          consiglio: String(o.consiglio || ""),
-          bestSituation: String(o.bestSituation || o.meglio || ""),
-          worstSituation: String(o.worstSituation || o.peggio || ""),
-          sets: cleanSets,
-          clips: 0,
-        };
+        next[r.number + "|" + r.name] = { voto: Math.round(Math.min(10, Math.max(1, v)) * 10) / 10, forza: String(o.forza || ""), consiglio: String(o.consiglio || ""), clips: 0 };
         ok++;
       });
       if (!ok) throw new Error("nessun giocatore riconosciuto");
@@ -2389,7 +2568,7 @@ function VolleyScout() {
           </div>
           <div className="mt-4">
             <label className="mb-1 block text-sm font-semibold text-slate-300" htmlFor="pj">📥 Incolla Risposta JSON di Claude</label>
-            <textarea id="pj" rows={5} value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder='{ "5": { "voto": 7.5, "forza": "...", "consiglio": "...", "bestSituation": "...", "worstSituation": "...", "sets": { "1": "...", "2": "..." } } }' className={`${inputCls} w-full font-mono text-xs`} />
+            <textarea id="pj" rows={5} value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder='{ "5": { "voto": 7.5, "forza": "...", "consiglio": "..." } }' className={`${inputCls} w-full font-mono text-xs`} />
             <button onClick={applyReports} disabled={!pasteText.trim()} className="mt-2 flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-500 disabled:opacity-40"><Sparkles className="h-4 w-4" /> ✨ Applica Pagelle</button>
             {pasteMsg && <p className={`mt-2 rounded-lg p-3 text-sm ${pasteMsg.type === "ok" ? "bg-emerald-950 text-emerald-300" : "bg-rose-950 text-rose-300"}`}>{pasteMsg.text}</p>}
           </div>
@@ -2448,7 +2627,6 @@ function VolleyScout() {
 /* ================= VISTA ATLETA (#report=...) ================= */
 const FILTERS = [
   { key: "all", label: "Tutte" },
-  { key: "star", label: "⭐ In evidenza" },
   { key: "#", label: "Punti #" },
   { key: "+", label: "Positivi +" },
   { key: "-", label: "Negativi -" },
@@ -2473,16 +2651,15 @@ function ReportError() {
 }
 
 function AthleteView({ data, onSwitch }) {
-  const { number, name, role, voto, forza, consiglio, bestSituation, worstSituation, sets, videoId, actions, kpi } = data;
+  const { number, name, role, voto, forza, consiglio, videoId, actions, kpi } = data;
   const [filter, setFilter] = useState("all");
   const [activeId, setActiveId] = useState(null);
   const [clipStart, setClipStart] = useState(0);
   const [clipPlayNonce, setClipPlayNonce] = useState(0);
 
   const stat = computeStats(actions.map((a) => ({ ...a, number, name, role })))[0];
-  const visible = filter === "all" ? actions : filter === "star" ? actions.filter((a) => a.aiFlag) : actions.filter((a) => a.result === filter);
-  const countOf = (k) => (k === "all" ? actions.length : k === "star" ? actions.filter((a) => a.aiFlag).length : actions.filter((a) => a.result === k).length);
-  const setKeys = sets && typeof sets === "object" ? Object.keys(sets).filter((k) => sets[k]).sort((a, b) => Number(a) - Number(b)) : [];
+  const visible = filter === "all" ? actions : actions.filter((a) => a.result === filter);
+  const countOf = (k) => (k === "all" ? actions.length : actions.filter((a) => a.result === k).length);
 
   useEffect(() => { document.title = "Pagella " + name + " - VolleyScout"; }, [name]);
 
@@ -2534,31 +2711,6 @@ function AthleteView({ data, onSwitch }) {
             <section className="rounded-xl border-l-4 border-orange-400 bg-orange-950/40 p-4">
               <h2 className="font-bold text-orange-300">Consiglio tecnico</h2>
               <p className="mt-1 text-slate-100">{consiglio}</p>
-            </section>
-          )}
-          {bestSituation && (
-            <section className="rounded-xl border border-emerald-500/40 bg-emerald-950/30 p-4">
-              <h2 className="font-bold text-emerald-300">🔥 Dove hai reso al meglio</h2>
-              <p className="mt-1 text-sm text-slate-100">{bestSituation}</p>
-            </section>
-          )}
-          {worstSituation && (
-            <section className="rounded-xl border border-rose-500/40 bg-rose-950/30 p-4">
-              <h2 className="font-bold text-rose-300">⚠️ Situazione critica</h2>
-              <p className="mt-1 text-sm text-slate-100">{worstSituation}</p>
-            </section>
-          )}
-          {setKeys.length > 0 && (
-            <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <h2 className="mb-3 text-lg font-bold">📋 Andamento Set per Set</h2>
-              <div className="space-y-2.5">
-                {setKeys.map((k) => (
-                  <div key={k} className="flex items-start gap-2.5 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                    <span className="shrink-0 rounded-md bg-orange-500 px-2 py-0.5 font-mono text-xs font-black text-slate-950">SET {k}</span>
-                    <p className="text-sm leading-snug text-slate-200">{sets[k]}</p>
-                  </div>
-                ))}
-              </div>
             </section>
           )}
 
@@ -2659,20 +2811,11 @@ function AthleteView({ data, onSwitch }) {
                   <button
                     onClick={() => playClip(a)}
                     disabled={!videoId}
-                    className={`flex min-h-[52px] flex-1 items-center gap-3 rounded-xl border px-3 py-2 text-left disabled:opacity-60 ${
-                      activeId === a.id
-                        ? "border-orange-400 bg-slate-800"
-                        : a.aiFlag
-                        ? "border-amber-400/70 bg-amber-950/25 hover:bg-amber-950/40"
-                        : "border-slate-800 bg-slate-900 hover:bg-slate-800"
-                    }`}
+                    className={`flex min-h-[52px] flex-1 items-center gap-3 rounded-xl border px-3 py-2 text-left disabled:opacity-60 ${activeId === a.id ? "border-orange-400 bg-slate-800" : "border-slate-800 bg-slate-900 hover:bg-slate-800"}`}
                   >
                     <Play className="h-4 w-4 shrink-0 text-orange-400" />
                     <span className="font-mono text-base tabular-nums text-orange-300">{fmt(a.time)}</span>
-                    <span className="flex flex-1 items-center gap-1.5 font-semibold">
-                      <span>{a.skill}</span>
-                      {a.aiFlag && <span className="rounded-full bg-amber-400/20 px-2 py-0.5 text-xs font-bold text-amber-300">⭐ In evidenza</span>}
-                    </span>
+                    <span className="flex-1 font-semibold">{a.skill}</span>
                     <span className={`flex h-8 w-8 items-center justify-center rounded-lg text-lg font-black ${RESULT_BADGE[a.result]}`}>{a.result}</span>
                   </button>
                   {videoId && (
