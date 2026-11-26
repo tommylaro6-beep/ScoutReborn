@@ -98,6 +98,41 @@ const RESULT_TEXT = {
 const SPEEDS = [0.75, 1, 1.25, 1.5];
 const LEAD_SECONDS = 3;
 
+/* Sub-tag oggettivi opzionali per fondamentale (campi extra su ogni azione: subType, blockers, targetZone, zone, ballType) */
+const ZONES = ["Z1", "Z2", "Z3", "Z4", "Z5", "Z6"];
+const SUB_SPEC = {
+  Battuta: [
+    { k: "subType", l: "Tipo servizio", c: "orange", opts: ["Salto Spin", "Salto Float", "Piedi a terra"] },
+    { k: "targetZone", l: "Zona bersaglio avversaria", c: "sky", opts: ZONES },
+  ],
+  Attacco: [
+    { k: "subType", l: "Colpo / Zona", c: "orange", opts: ["Diagonale", "Lungolinea", "Pallonetto / Mani-out", "Primo Tempo / Pipe"] },
+    { k: "blockers", l: "Muro avversario", c: "sky", opts: [{ v: 0, t: "Senza muro (0)" }, { v: 1, t: "Muro a 1" }, { v: 2, t: "Muro a 2" }] },
+    { k: "targetZone", l: "Zona bersaglio avversaria", c: "sky", opts: ZONES },
+  ],
+  Ricezione: [
+    { k: "zone", l: "Zona di campo", c: "sky", opts: ["Z5", "Z6", "Z1", "Z4", "Z3", "Z2"] },
+  ],
+  Difesa: [
+    { k: "zone", l: "Zona di campo", c: "sky", opts: ["Z5", "Z6", "Z1", "Z4", "Z3", "Z2"] },
+    { k: "ballType", l: "Tipo palla", c: "orange", opts: ["Attacco forte", "Pallonetto / Piazzata"] },
+  ],
+};
+/* Badge discreti per il Registro azioni (le vecchie azioni senza sub-tag non ne hanno) */
+function detailBadges(a) {
+  const b = [];
+  if (a.subType) b.push({ t: a.subType, c: "bg-orange-500/20 text-orange-300" });
+  if (a.blockers !== undefined && a.blockers !== null) b.push({ t: a.blockers === 0 ? "Senza muro" : "Muro a " + a.blockers, c: "bg-violet-500/20 text-violet-300" });
+  if (a.ballType) b.push({ t: a.ballType, c: "bg-orange-500/20 text-orange-300" });
+  if (a.targetZone) b.push({ t: "→ " + a.targetZone, c: "bg-sky-500/20 text-sky-300" });
+  if (a.zone) b.push({ t: a.zone, c: "bg-sky-500/20 text-sky-300" });
+  return b;
+}
+const CAUSE_OPTS = {
+  win: ["Errore Battuta Avv.", "Errore Attacco Avv.", "Fallo / Invasione Avv."],
+  lose: ["Palla caduta (no difesa)", "Fallo / Invasione Noi", "Merito Avversario"],
+};
+
 const INITIAL_ROSTER = [
   { id: 1, number: 1, name: "Marco Bianchi", role: "Palleggiatore" },
   { id: 2, number: 4, name: "Luca Ferri", role: "Schiacciatore" },
@@ -1660,6 +1695,14 @@ function VolleyScout() {
   const [toast, setToast] = useState("");
   const [tab, setTab] = useState("scout");
   const [flagNext, setFlagNext] = useState(false);
+  const [subTags, setSubTags] = useState({});
+  const [causeBar, setCauseBar] = useState(null);
+  useEffect(() => { setSubTags({}); }, [selSkill]); /* cambio/azzeramento fondamentale = sub-tag puliti */
+  useEffect(() => {
+    if (!causeBar) return;
+    const t = setTimeout(() => setCauseBar(null), 4000);
+    return () => clearTimeout(t);
+  }, [causeBar]);
   const [game, setGame] = useState(() => mkGame(S.game));
   const [selZone, setSelZone] = useState(null);
   const [swapFrom, setSwapFrom] = useState(null);
@@ -1795,10 +1838,13 @@ function VolleyScout() {
     const time = Math.max(0, Math.floor(t - LEAD_SECONDS));
     const player = roster.find((r) => r.id === selPlayer);
     if (!player) return;
+    const extra = {};
+    (SUB_SPEC[selSkill] || []).forEach((g) => { if (subTags[g.k] !== undefined) extra[g.k] = subTags[g.k]; });
     setActions((a) => [
       ...a,
       {
         id: nextId.current++,
+        ...extra,
         time,
         number: player.number,
         name: player.name,
@@ -1811,7 +1857,7 @@ function VolleyScout() {
         rallyId: null,
       },
     ]);
-    setFlash(`#${player.number} ${selSkill} ${result} @ ${fmt(time)}`);
+    setFlash(`#${player.number} ${selSkill}${extra.subType ? " · " + extra.subType : ""} ${result} @ ${fmt(time)}`);
     setTimeout(() => setFlash(""), 1800);
     setSelSkill(null);
     setFlagNext(false);
@@ -1843,8 +1889,8 @@ function VolleyScout() {
     );
   const exportCSV = () => {
     const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
-    const rows = [["Timestamp", "Secondi", "Maglia", "Giocatore", "Ruolo", "Fondamentale", "Esito"]]
-      .concat(actions.map((a) => [fmt(a.time), a.time, a.number, a.name, a.role, a.skill, a.result]));
+    const rows = [["Timestamp", "Secondi", "Maglia", "Giocatore", "Ruolo", "Fondamentale", "Esito", "Dettaglio", "Muro", "Zona"]]
+      .concat(actions.map((a) => [fmt(a.time), a.time, a.number, a.name, a.role, a.skill, a.result, [a.subType, a.ballType].filter(Boolean).join(" / "), a.blockers === undefined || a.blockers === null ? "" : a.blockers, a.targetZone || a.zone || ""]));
     download("scouting-partita.csv", "\ufeff" + rows.map((r) => r.map(esc).join(";")).join("\n"), "text/csv;charset=utf-8");
   };
 
@@ -2038,7 +2084,15 @@ function VolleyScout() {
     if (eff.filter(Boolean).length < 6) { showToast("Imposta prima i 6 giocatori in campo (tocca le zone)."); return; }
     const id = nextId.current++;
     const keys = eff.map((i) => roster.find((x) => x.id === i)).filter(Boolean).map((r) => r.number + "|" + r.name);
-    setRallies((rs) => [...rs, { id, set: game.set, rot: game.rot, serving: game.serving, won, lineup: keys, rotated: won && !game.serving && game.auto }]);
+    /* Causale oggettiva: automatica se i tag la dimostrano, altrimenti "Non specificata" + barra rapida per 4 secondi */
+    const open = actions.filter((a) => a.rallyId == null);
+    let cause = "Non specificata", auto = false;
+    if (won) {
+      if (open.some((a) => a.result === "#" && ["Attacco", "Battuta", "Muro"].includes(a.skill))) { cause = "Punto diretto"; auto = true; }
+    } else if (open.some((a) => a.result === "=")) { cause = "Errore diretto"; auto = true; }
+    else if (open.some((a) => a.result === "/")) { cause = "Merito Avversario"; auto = true; }
+    setRallies((rs) => [...rs, { id, set: game.set, rot: game.rot, serving: game.serving, won, lineup: keys, rotated: won && !game.serving && game.auto, cause }]);
+    setCauseBar(auto ? null : { id, won });
     setActions((as) => as.map((a) => (a.rallyId == null ? { ...a, rallyId: id } : a)));
     setGame((g) => { const n = { ...g, serving: won }; return won && !g.serving && g.auto ? rotateOnce(n) : n; });
     showToast(won ? "Punto Noi registrato." : "Punto Avversari registrato.");
@@ -2047,10 +2101,18 @@ function VolleyScout() {
     const last = rallies[rallies.length - 1];
     if (!last) return;
     setRallies((rs) => rs.slice(0, -1));
+    setCauseBar(null);
     setActions((as) => as.map((a) => (a.rallyId === last.id ? { ...a, rallyId: null } : a)));
     /* ripristina battuta e, se il punto aveva fatto ruotare, la rotazione esatta di prima */
     setGame((g) => ({ ...(last.rotated ? rotateBack(g) : g), serving: last.serving, set: last.set || g.set }));
     showToast("Ultimo punto annullato" + (last.rotated ? " e rotazione ripristinata." : "."));
+  };
+  const setCause = (cause) => {
+    if (!causeBar) return;
+    const id = causeBar.id;
+    setRallies((rs) => rs.map((r) => (r.id === id ? { ...r, cause } : r)));
+    setCauseBar(null);
+    showToast("Causale: " + cause);
   };
   const setRalliesCur = rallies.filter((r) => (r.set || 1) === game.set);
   const ptsNoi = setRalliesCur.filter((r) => r.won).length;
@@ -2359,6 +2421,23 @@ function VolleyScout() {
               </div>
             </div>
 
+            {selPlayer && selSkill && SUB_SPEC[selSkill] && (
+              <div className="space-y-2 rounded-lg border border-slate-700 bg-slate-950/40 p-2">
+                <h3 className="text-xs font-bold uppercase tracking-wide text-slate-400">Dettaglio oggettivo <span className="font-normal normal-case text-slate-500">(opzionale · tocca per scegliere, ritocca per togliere)</span></h3>
+                {SUB_SPEC[selSkill].map((g) => (
+                  <div key={g.k} className="flex flex-wrap items-center gap-1.5">
+                    <span className="w-full text-[11px] font-semibold text-slate-400 sm:w-auto sm:min-w-[130px]">{g.l}</span>
+                    {g.opts.map((o) => {
+                      const v = typeof o === "object" ? o.v : o, t = typeof o === "object" ? o.t : o;
+                      const on = subTags[g.k] === v;
+                      return (
+                        <button key={String(v)} onClick={() => setSubTags((s) => { const n = { ...s }; if (n[g.k] === v) delete n[g.k]; else n[g.k] = v; return n; })} className={`rounded-lg px-2.5 py-2 text-xs font-semibold transition ${on ? (g.c === "orange" ? "bg-orange-500 text-slate-950" : "bg-sky-500 text-sky-950") : "bg-slate-800 hover:bg-slate-700"}`}>{t}</button>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            )}
             <button onClick={() => setFlagNext((v) => !v)} className={`w-full rounded-lg border px-3 py-2 text-sm font-semibold ${flagNext ? "border-yellow-400 bg-yellow-400 text-slate-950" : "border-slate-600 bg-slate-800 text-slate-200"}`}>
               {flagNext ? "⭐ Prossima azione segnata per AI (S)" : "☆ Segna per AI (tasto S)"}
             </button>
@@ -2537,7 +2616,7 @@ function VolleyScout() {
                       <td className="p-2 font-mono tabular-nums text-orange-300">{fmt(a.time)}</td>
                       <td className="p-2 font-bold">{a.number}</td>
                       <td className="p-2">{a.name}</td>
-                      <td className="p-2">{a.skill}</td>
+                      <td className="p-2">{a.skill}{detailBadges(a).length > 0 && (<div className="mt-0.5 flex flex-wrap gap-1">{detailBadges(a).map((b, i) => (<span key={i} className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${b.c}`}>{b.t}</span>))}</div>)}</td>
                       <td className={`p-2 text-center text-xl font-black ${RESULT_TEXT[a.result]}`}>{a.result}</td>
                       <td className="p-2 text-center"><button onClick={(e) => { e.stopPropagation(); toggleFlag(a.id); }} className="text-xl" aria-label="Segna per AI">{a.aiFlag ? "⭐" : "☆"}</button></td>
                       <td className="p-2 text-right">
@@ -2617,6 +2696,19 @@ function VolleyScout() {
         </section>
       )}
 
+      {causeBar && rallies.some((r) => r.id === causeBar.id) && (
+        <div className="fixed bottom-16 left-1/2 z-50 w-[calc(100%-1.5rem)] max-w-xl -translate-x-1/2 rounded-xl border border-slate-600 bg-slate-900/95 p-2 shadow-2xl">
+          <div className="mb-1 flex items-center justify-between text-xs font-semibold text-slate-300">
+            <span>{causeBar.won ? "Punto Noi" : "Punto Avversari"} · causale? <span className="font-normal text-slate-500">(si chiude da sola)</span></span>
+            <button onClick={() => setCauseBar(null)} className="rounded px-2 py-0.5 text-slate-400 hover:bg-slate-800" aria-label="Chiudi">✕</button>
+          </div>
+          <div className="grid grid-cols-3 gap-1.5">
+            {CAUSE_OPTS[causeBar.won ? "win" : "lose"].map((c) => (
+              <button key={c} onClick={() => setCause(c)} className={`rounded-lg px-1.5 py-2 text-xs font-bold leading-tight active:scale-95 ${causeBar.won ? "bg-emerald-500 text-emerald-950 hover:bg-emerald-400" : "bg-rose-500 text-rose-950 hover:bg-rose-400"}`}>{c}</button>
+            ))}
+          </div>
+        </div>
+      )}
       {toast && (
         <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full bg-slate-100 px-5 py-3 text-sm font-semibold text-slate-950 shadow-lg">{toast}</div>
       )}
