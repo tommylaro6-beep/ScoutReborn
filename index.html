@@ -927,7 +927,7 @@ function whatsappText(p, r, videoId) {
   return L.join("\n");
 }
 
-function PlayerCard({ p, report, videoId, onClip, onCopy, onLink, onGen, busy, err, kpi }) {
+function PlayerCard({ p, report, videoId, onClip, onEdit, onCopy, onLink, onGen, busy, err, kpi }) {
   const nFlag = p.actions.filter((a) => a.aiFlag).length;
   return (
     <article className="flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-900 p-4">
@@ -987,12 +987,15 @@ function PlayerCard({ p, report, videoId, onClip, onCopy, onLink, onGen, busy, e
         <div>
           <h4 className="mb-1 text-xs font-semibold text-slate-400">Rivedi le clip</h4>
           <div className="flex max-h-24 flex-wrap gap-1 overflow-y-auto">
-            {p.actions.map((a) => (
-              <button key={a.id} onClick={() => onClip(a.time)} className="flex items-center gap-1 rounded-md bg-slate-800 px-2 py-1 text-xs hover:bg-slate-700">
-                <Play className="h-3 w-3" />
-                <span className="font-mono">{fmt(a.time)}</span> {a.skill}
-                <b className={RESULT_TEXT[a.result]}>{a.result}</b>
-              </button>
+            {p.actions.slice().reverse().map((a) => (
+              <span key={a.id} className="inline-flex items-stretch">
+                <button onClick={() => onClip(a.time)} className={"flex items-center gap-1 bg-slate-800 px-2 py-1 text-xs hover:bg-slate-700 " + (onEdit ? "rounded-l-md" : "rounded-md")}>
+                  <Play className="h-3 w-3" />
+                  <span className="font-mono">{fmt(a.time)}</span> {a.skill}
+                  <b className={RESULT_TEXT[a.result]}>{a.result}</b>
+                </button>
+                {onEdit && (<button onClick={() => onEdit(a)} className="rounded-r-md border-l border-slate-700 bg-slate-800 px-1.5 text-xs hover:bg-slate-700" aria-label="Modifica azione" title="Modifica azione">✏️</button>)}
+              </span>
             ))}
           </div>
         </div>
@@ -2071,6 +2074,82 @@ function AnalysisDashboard({ actions, rallies, roster, reports, archive, game })
   );
 }
 
+/* ================= MODIFICA IN-PLACE DI UN'AZIONE (modale compatto) ================= */
+const parseTime = (s) => { /* accetta secondi (75), mm:ss (1:15) oppure h:mm:ss */
+  const t = String(s || "").trim();
+  if (!t) return null;
+  if (/^\d+$/.test(t)) return parseInt(t, 10);
+  if (!/^\d+(:\d{1,2}){1,2}$/.test(t)) return null;
+  const p = t.split(":").map(Number);
+  return p.length === 2 ? p[0] * 60 + p[1] : p[0] * 3600 + p[1] * 60 + p[2];
+};
+function EditActionModal({ draft, setDraft, roster, onSave, onCancel }) {
+  const boxRef = useRef(null);
+  useEffect(() => { if (boxRef.current) boxRef.current.focus(); }, []);
+  const spec = SUB_SPEC[draft.skill] || [];
+  const tsec = parseTime(draft.tstr);
+  const opts = roster.map((r) => ({ k: r.number + "|" + r.name, t: "#" + r.number + " " + r.name }));
+  if (!opts.some((o) => o.k === draft.pkey)) opts.unshift({ k: draft.pkey, t: "#" + draft.pkey.replace("|", " ") + " (fuori rosa)" });
+  const upd = (patch) => setDraft((d) => ({ ...d, ...patch }));
+  const setSkill = (s) => setDraft((d) => {
+    if (d.skill === s) return d;
+    const keep = {};
+    (SUB_SPEC[s] || []).forEach((g) => { if (d.sub[g.k] !== undefined && g.opts.some((o) => (typeof o === "object" ? o.v : o) === d.sub[g.k])) keep[g.k] = d.sub[g.k]; });
+    return { ...d, skill: s, sub: keep };
+  });
+  const nudge = (n) => { const t = tsec === null ? 0 : tsec; upd({ tstr: fmt(Math.max(0, t + n)) }); };
+  const pillCls = (on, c) => "rounded-lg px-2.5 py-2 text-xs font-semibold " + (on ? (c === "orange" ? "bg-orange-500 text-slate-950" : "bg-sky-500 text-sky-950") : "bg-slate-800 hover:bg-slate-700");
+  return (
+    <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 p-2 sm:items-center" onClick={onCancel} onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Escape") onCancel(); }}>
+      <div ref={boxRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Modifica azione" className="max-h-[92vh] w-full max-w-lg space-y-3 overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl outline-none" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-lg font-bold">✏️ Modifica azione</h3>
+        <div>
+          <label className="mb-1 block text-xs font-semibold text-slate-400">Giocatore</label>
+          <select value={draft.pkey} onChange={(e) => upd({ pkey: e.target.value })} className="w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-orange-400">
+            {opts.map((o) => (<option key={o.k} value={o.k}>{o.t}</option>))}
+          </select>
+        </div>
+        <div>
+          <div className="mb-1 text-xs font-semibold text-slate-400">Fondamentale</div>
+          <div className="flex flex-wrap gap-1.5">{SKILLS.map((s) => (<button key={s} onClick={() => setSkill(s)} className={pillCls(draft.skill === s, "orange")}>{s}</button>))}</div>
+        </div>
+        <div>
+          <div className="mb-1 text-xs font-semibold text-slate-400">Esito</div>
+          <div className="grid grid-cols-5 gap-1.5">{RESULTS.map((r) => (<button key={r.key} title={r.label} onClick={() => upd({ result: r.key })} className={"rounded-lg py-2.5 text-xl font-black " + (draft.result === r.key ? RESULT_BADGE[r.key] + " ring-2 ring-white" : "bg-slate-800 hover:bg-slate-700 " + RESULT_TEXT[r.key])}>{r.key}</button>))}</div>
+        </div>
+        {spec.length > 0 && (
+          <div className="space-y-2 rounded-lg border border-slate-700 bg-slate-950/40 p-2">
+            <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Dettaglio oggettivo <span className="font-normal normal-case text-slate-500">(opzionale · ritocca per togliere)</span></div>
+            {spec.map((g) => (
+              <div key={g.k} className="flex flex-wrap items-center gap-1.5">
+                <span className="w-full text-[11px] font-semibold text-slate-400">{g.l}</span>
+                {g.opts.map((o) => {
+                  const v = typeof o === "object" ? o.v : o, t = typeof o === "object" ? o.t : o;
+                  return (<button key={String(v)} onClick={() => setDraft((d) => { const n = { ...d.sub }; if (n[g.k] === v) delete n[g.k]; else n[g.k] = v; return { ...d, sub: n }; })} className={pillCls(draft.sub[g.k] === v, g.c)}>{t}</button>);
+                })}
+              </div>
+            ))}
+          </div>
+        )}
+        <div>
+          <label className="mb-1 block text-xs font-semibold text-slate-400">Timestamp video <span className="font-normal text-slate-500">(mm:ss, h:mm:ss o secondi)</span></label>
+          <div className="flex items-center gap-2">
+            <button onClick={() => nudge(-1)} className="rounded-lg bg-slate-800 px-3 py-2 text-sm font-bold hover:bg-slate-700">−1s</button>
+            <input value={draft.tstr} onChange={(e) => upd({ tstr: e.target.value })} inputMode="numeric" className={"w-28 rounded-lg border bg-slate-950 px-3 py-2 text-center font-mono text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-orange-400 " + (tsec === null ? "border-rose-500" : "border-slate-600")} />
+            <button onClick={() => nudge(1)} className="rounded-lg bg-slate-800 px-3 py-2 text-sm font-bold hover:bg-slate-700">+1s</button>
+            {tsec === null && <span className="text-xs text-rose-400">formato non valido</span>}
+          </div>
+        </div>
+        <button onClick={() => upd({ aiFlag: !draft.aiFlag })} className={"w-full rounded-lg border px-3 py-2 text-sm font-semibold " + (draft.aiFlag ? "border-amber-400 bg-amber-400/15 text-amber-300" : "border-slate-600 bg-slate-800 text-slate-300")}>{draft.aiFlag ? "⭐ Clip segnata per AI" : "☆ Clip non segnata"}</button>
+        <div className="flex gap-2 pt-1">
+          <button onClick={onCancel} className="flex-1 rounded-lg bg-slate-800 px-4 py-3 font-semibold hover:bg-slate-700">Annulla</button>
+          <button onClick={onSave} disabled={tsec === null} className="flex-1 rounded-lg bg-orange-500 px-4 py-3 font-bold text-slate-950 hover:bg-orange-400 disabled:opacity-40">Salva</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function VolleyScout() {
   const saved = useRef(null);
   if (saved.current === null) saved.current = loadSaved();
@@ -2093,6 +2172,7 @@ function VolleyScout() {
   const [selSkill, setSelSkill] = useState(null);
   const [actions, setActions] = useState(() => (Array.isArray(S.actions) ? S.actions : []));
   const [flash, setFlash] = useState("");
+  const [editDraft, setEditDraft] = useState(null);
 
   const hostRef = useRef(null);
   const playerRef = useRef(null);
@@ -2279,6 +2359,31 @@ function VolleyScout() {
   const toggleFlag = (id) => setActions((as) => as.map((a) => (a.id === id ? { ...a, aiFlag: !a.aiFlag } : a)));
 
   const deleteAction = (id) => setActions((a) => a.filter((x) => x.id !== id));
+
+  /* Modifica in-place: l'azione resta nella stessa posizione dell'array (e nello stesso scambio) */
+  const startEdit = (a) => {
+    const sub = {};
+    SUB_FIELDS.forEach((f) => { if (a[f] !== undefined && a[f] !== null && a[f] !== "") sub[f] = a[f]; });
+    setEditDraft({ id: a.id, pkey: a.number + "|" + a.name, skill: a.skill, result: a.result, aiFlag: !!a.aiFlag, tstr: fmt(a.time), sub });
+  };
+  const saveEdit = () => {
+    const d = editDraft;
+    if (!d) return;
+    const t = parseTime(d.tstr);
+    if (t === null) return;
+    const pl = roster.find((r) => r.number + "|" + r.name === d.pkey);
+    setActions((as) => as.map((a) => {
+      if (a.id !== d.id) return a;
+      const n = { ...a };
+      SUB_FIELDS.forEach((f) => { delete n[f]; });
+      (SUB_SPEC[d.skill] || []).forEach((g) => { if (d.sub[g.k] !== undefined) n[g.k] = d.sub[g.k]; });
+      if (pl) { n.number = pl.number; n.name = pl.name; n.role = pl.role; }
+      n.skill = d.skill; n.result = d.result; n.aiFlag = d.aiFlag; n.time = t;
+      return n;
+    }));
+    setEditDraft(null);
+    showToast("Azione aggiornata");
+  };
 
   /* --- Roster --- */
   const addPlayer = (e) => {
@@ -3020,7 +3125,7 @@ function VolleyScout() {
                   </tr>
                 </thead>
                 <tbody>
-                  {actions.map((a) => (
+                  {actions.slice().reverse().map((a) => (
                     <tr
                       key={a.id}
                       onClick={() => jumpTo(a.time)}
@@ -3033,7 +3138,15 @@ function VolleyScout() {
                       <td className="p-2">{a.skill}{detailBadges(a).length > 0 && (<div className="mt-0.5 flex flex-wrap gap-1">{detailBadges(a).map((b, i) => (<span key={i} className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${b.c}`}>{b.t}</span>))}</div>)}</td>
                       <td className={`p-2 text-center text-xl font-black ${RESULT_TEXT[a.result]}`}>{a.result}</td>
                       <td className="p-2 text-center"><button onClick={(e) => { e.stopPropagation(); toggleFlag(a.id); }} className="text-xl" aria-label="Segna per AI">{a.aiFlag ? "⭐" : "☆"}</button></td>
-                      <td className="p-2 text-right">
+                      <td className="whitespace-nowrap p-2 text-right">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); startEdit(a); }}
+                          className="mr-1 rounded p-1 text-base text-slate-300 hover:bg-slate-700"
+                          aria-label="Modifica azione"
+                          title="Modifica azione"
+                        >
+                          ✏️
+                        </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); deleteAction(a.id); }}
                           className="rounded p-1 text-slate-400 hover:bg-rose-500 hover:text-white"
@@ -3081,6 +3194,7 @@ function VolleyScout() {
                 report={reports[p.key]}
                 videoId={videoId}
                 onClip={jumpClip}
+                onEdit={startEdit}
                 onCopy={() => copyWithToast(whatsappText(p, reports[p.key], videoId), `Report di ${p.name} copiato: incollalo su WhatsApp.`)}
                 onLink={() => copyPlayerLink(p)}
                 kpi={kpiRow(p)}
@@ -3110,6 +3224,7 @@ function VolleyScout() {
         </section>
       )}
 
+      {editDraft && <EditActionModal draft={editDraft} setDraft={setEditDraft} roster={roster} onSave={saveEdit} onCancel={() => setEditDraft(null)} />}
       {causeBar && rallies.some((r) => r.id === causeBar.id) && (
         <div className="fixed bottom-16 left-1/2 z-50 w-[calc(100%-1.5rem)] max-w-xl -translate-x-1/2 rounded-xl border border-slate-600 bg-slate-900/95 p-2 shadow-2xl">
           <div className="mb-1 flex items-center justify-between text-xs font-semibold text-slate-300">
